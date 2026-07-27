@@ -110,7 +110,118 @@ body {
   display: flex;
   gap: 8px;
   align-items: stretch;
+  margin-bottom: 8px;
 }
+
+.start-row:last-child { margin-bottom: 0; }
+.start-row.is-hidden { display: none; }
+
+/* Recherche d'adresse */
+
+.search { position: relative; }
+
+.search input[type="search"] {
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  appearance: none;
+}
+
+.search input[type="search"]:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: -1px;
+}
+
+.suggestions {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  z-index: 1100;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 232px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.suggestions.is-hidden { display: none; }
+
+.suggestions li button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.suggestions li button:hover,
+.suggestions li button:focus-visible {
+  background: var(--bg);
+}
+
+.suggestions .sug__detail {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 1px;
+}
+
+.suggestions .sug__empty {
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Enregistrement d'un lieu */
+
+.save-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.save-row.is-hidden { display: none; }
+
+.save-row input {
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius);
+}
+
+.btn--ok {
+  color: #fff;
+  background: var(--primary);
+  border-color: transparent;
+}
+
+.btn--saved { color: var(--accent); }
+
+#select-place { flex: 1; min-width: 0; }
 
 .start-coords {
   flex: 1;
@@ -188,7 +299,13 @@ select {
   appearance: none;
 }
 
-select { padding-right: 12px; }
+select {
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%238a94a2' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 11px;
+}
 
 .input-group input:focus,
 select:focus {

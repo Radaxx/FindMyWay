@@ -4,13 +4,17 @@ import { cumulativeDistances } from './geo.js';
 import { planRoute } from './planner.js';
 import { fetchElevationProfile, interpolateElevations } from './elevation.js';
 import { buildGpx, downloadGpx, gpxFilename } from './gpx.js';
+import { searchAddress, reverseGeocode } from './geocoding.js';
+import { listPlaces, savePlace, deletePlace, getPlace, findPlaceNear } from './places.js';
 
 const STORAGE_KEY = 'findmyway.settings.v1';
 const DEFAULT_SPEED = { bike: 25, run: 10 };
 const SPORT_LABEL = { bike: 'Vélo', run: 'Course à pied' };
+const SEARCH_DELAY = 450; // ms : Nominatim demande de ne pas dépasser 1 requête/s
 
 const state = {
   start: null,
+  startLabel: null, // adresse ou nom du lieu correspondant au départ
   sport: 'bike',
   shape: 'loop',
   goal: 'distance',
@@ -26,17 +30,22 @@ let startMarker;
 let endMarker;
 let routeLine;
 let controller = null;
+let searchController = null;
+let searchTimer = null;
 
 function init() {
   cacheDom();
   restoreSettings();
   initMap();
   bindEvents();
+  refreshPlaces();
   updateGoalHint();
 }
 
 function cacheDom() {
   const ids = [
+    'input-address', 'address-results', 'btn-save-place', 'save-row', 'input-place-name',
+    'btn-save-confirm', 'btn-save-cancel', 'places-row', 'select-place', 'btn-delete-place',
     'panel', 'panel-toggle', 'start-coords', 'btn-locate', 'seg-sport', 'seg-shape',
     'seg-goal', 'group-distance', 'group-time', 'input-distance', 'input-time',
     'input-speed', 'goal-hint', 'select-direction', 'btn-plan', 'btn-variant',
@@ -62,7 +71,7 @@ function initMap() {
   }).addTo(map);
 
   map.on('click', (e) => setStart({ lat: e.latlng.lat, lng: e.latlng.lng }));
-  if (state.start) setStart(state.start, { fly: false });
+  if (state.start) setStart(state.start, { fly: false, label: state.startLabel });
 }
 
 function pinIcon(label, variant = '') {
@@ -74,8 +83,10 @@ function pinIcon(label, variant = '') {
   });
 }
 
-function setStart(latlng, { fly = true } = {}) {
+function setStart(latlng, { fly = true, label = null } = {}) {
   state.start = latlng;
+  // Un lieu enregistré au même endroit l'emporte sur l'adresse trouvée.
+  state.startLabel = findPlaceNear(latlng)?.name ?? label;
 
   if (!startMarker) {
     startMarker = L.marker([latlng.lat, latlng.lng], {
@@ -93,10 +104,21 @@ function setStart(latlng, { fly = true } = {}) {
 
   if (fly) map.panTo([latlng.lat, latlng.lng]);
 
-  el.startCoords.textContent = `${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}`;
+  updateStartDisplay();
+  hideSaveRow();
+  saveSettings();
+}
+
+function updateStartDisplay() {
+  const { start, startLabel } = state;
+  if (!start) return;
+
+  const coords = `${start.lat.toFixed(5)}, ${start.lng.toFixed(5)}`;
+  el.startCoords.textContent = startLabel ? `${startLabel} · ${coords}` : coords;
   el.startCoords.classList.add('is-set');
   el.btnPlan.disabled = false;
-  saveSettings();
+  el.btnSavePlace.disabled = false;
+  syncPlaceSelection();
 }
 
 function drawRoute(coords, shape) {
@@ -126,9 +148,200 @@ function drawRoute(coords, shape) {
   map.fitBounds(routeLine.getBounds(), { padding: [40, 40] });
 }
 
+/* ------------------------------------------------------- adresses & lieux --- */
+
+function bindPlaces() {
+  el.inputAddress.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    const query = el.inputAddress.value.trim();
+    if (query.length < 3) {
+      hideSuggestions();
+      return;
+    }
+    searchTimer = setTimeout(() => runSearch(query), SEARCH_DELAY);
+  });
+
+  el.inputAddress.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      clearTimeout(searchTimer);
+      runSearch(el.inputAddress.value.trim());
+    } else if (e.key === 'Escape') {
+      hideSuggestions();
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.search')) hideSuggestions();
+  });
+
+  el.btnSavePlace.addEventListener('click', openSaveRow);
+  el.btnSaveCancel.addEventListener('click', hideSaveRow);
+  el.btnSaveConfirm.addEventListener('click', confirmSave);
+  el.inputPlaceName.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') confirmSave();
+    else if (e.key === 'Escape') hideSaveRow();
+  });
+
+  el.selectPlace.addEventListener('change', () => {
+    const place = getPlace(el.selectPlace.value);
+    if (!place) {
+      el.btnDeletePlace.disabled = true;
+      return;
+    }
+    setStart({ lat: place.lat, lng: place.lng }, { fly: false, label: place.name });
+    map.setView([place.lat, place.lng], Math.max(map.getZoom(), 13));
+    setStatus(`Départ : ${place.name}.`);
+  });
+
+  el.btnDeletePlace.addEventListener('click', () => {
+    const place = getPlace(el.selectPlace.value);
+    if (!place) return;
+    if (!window.confirm(`Supprimer le lieu « ${place.name} » ?`)) return;
+
+    deletePlace(place.id);
+    if (state.startLabel === place.name) state.startLabel = null;
+    refreshPlaces();
+    updateStartDisplay();
+    setStatus(`Lieu « ${place.name} » supprimé.`);
+  });
+}
+
+async function runSearch(query) {
+  if (query.length < 3) return;
+
+  searchController?.abort();
+  searchController = new AbortController();
+  renderSuggestions([], 'Recherche…');
+
+  try {
+    const results = await searchAddress(query, { signal: searchController.signal });
+    renderSuggestions(results, 'Aucun résultat pour cette recherche.');
+  } catch (err) {
+    if (err.name === 'AbortError') return;
+    renderSuggestions([], "Recherche d'adresse indisponible pour le moment.");
+  }
+}
+
+function renderSuggestions(results, emptyMessage) {
+  el.addressResults.innerHTML = '';
+
+  if (!results.length) {
+    const li = document.createElement('li');
+    li.className = 'sug__empty';
+    li.textContent = emptyMessage;
+    el.addressResults.append(li);
+  } else {
+    for (const place of results) {
+      const li = document.createElement('li');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.append(place.label);
+      if (place.detail) {
+        const detail = document.createElement('span');
+        detail.className = 'sug__detail';
+        detail.textContent = place.detail;
+        button.append(detail);
+      }
+      button.addEventListener('click', () => {
+        setStart({ lat: place.lat, lng: place.lng }, { fly: false, label: place.full });
+        map.setView([place.lat, place.lng], 14);
+        el.inputAddress.value = place.full;
+        hideSuggestions();
+      });
+      li.append(button);
+      el.addressResults.append(li);
+    }
+  }
+
+  el.addressResults.classList.remove('is-hidden');
+}
+
+function hideSuggestions() {
+  clearTimeout(searchTimer);
+  el.addressResults.classList.add('is-hidden');
+  el.addressResults.innerHTML = '';
+}
+
+/** Ouvre la ligne d'enregistrement, avec un nom pré-rempli si possible. */
+async function openSaveRow() {
+  if (!state.start) return;
+
+  const existing = findPlaceNear(state.start);
+  el.saveRow.classList.remove('is-hidden');
+  el.inputPlaceName.value = existing?.name || state.startLabel || '';
+  el.inputPlaceName.focus();
+  el.inputPlaceName.select();
+
+  if (el.inputPlaceName.value) return;
+
+  // Sans nom connu, on demande l'adresse la plus proche pour pré-remplir.
+  el.inputPlaceName.placeholder = "Recherche de l'adresse…";
+  const point = state.start;
+  const found = await reverseGeocode(point);
+  const stillRelevant = state.start === point && !el.saveRow.classList.contains('is-hidden');
+  if (found && stillRelevant && !el.inputPlaceName.value) {
+    el.inputPlaceName.value = found.full;
+    el.inputPlaceName.select();
+  }
+  el.inputPlaceName.placeholder = 'Nom du lieu (ex. Domicile)';
+}
+
+function hideSaveRow() {
+  el.saveRow.classList.add('is-hidden');
+  el.inputPlaceName.value = '';
+}
+
+function confirmSave() {
+  if (!state.start) return;
+
+  const name = el.inputPlaceName.value.trim();
+  if (!name) {
+    el.inputPlaceName.focus();
+    return;
+  }
+
+  const place = savePlace({ name, lat: state.start.lat, lng: state.start.lng });
+  state.startLabel = place.name;
+  hideSaveRow();
+  refreshPlaces();
+  updateStartDisplay();
+  setStatus(`Lieu « ${place.name} » enregistré.`);
+}
+
+/** Reconstruit la liste déroulante des lieux enregistrés. */
+function refreshPlaces() {
+  const places = listPlaces();
+  const previous = el.selectPlace.value;
+
+  el.selectPlace.innerHTML = '<option value="">Lieux enregistrés…</option>';
+  for (const place of places) {
+    const option = document.createElement('option');
+    option.value = place.id;
+    option.textContent = place.name;
+    el.selectPlace.append(option);
+  }
+
+  el.placesRow.classList.toggle('is-hidden', places.length === 0);
+  el.selectPlace.value = places.some((p) => p.id === previous) ? previous : '';
+  syncPlaceSelection();
+}
+
+/** Aligne la sélection et l'étoile sur le point de départ courant. */
+function syncPlaceSelection() {
+  const place = findPlaceNear(state.start);
+  el.selectPlace.value = place?.id ?? '';
+  el.btnDeletePlace.disabled = !place;
+  el.btnSavePlace.textContent = place ? '★' : '☆';
+  el.btnSavePlace.classList.toggle('btn--saved', Boolean(place));
+  el.btnSavePlace.title = place ? 'Renommer ce lieu' : 'Enregistrer ce lieu';
+}
+
 /* ------------------------------------------------------------ formulaire --- */
 
 function bindEvents() {
+  bindPlaces();
+
   bindSegmented(el.segSport, (value) => {
     state.sport = value;
     el.inputSpeed.value = DEFAULT_SPEED[value];
@@ -374,6 +587,7 @@ function saveSettings() {
       STORAGE_KEY,
       JSON.stringify({
         start: state.start,
+        startLabel: state.startLabel,
         sport: state.sport,
         shape: state.shape,
         goal: state.goal,
@@ -397,7 +611,10 @@ function restoreSettings() {
   }
   if (!saved) return;
 
-  if (saved.start?.lat != null) state.start = saved.start;
+  if (saved.start?.lat != null) {
+    state.start = saved.start;
+    state.startLabel = saved.startLabel ?? null;
+  }
   if (saved.distance) el.inputDistance.value = saved.distance;
   if (saved.time) el.inputTime.value = saved.time;
   if (saved.speed) el.inputSpeed.value = saved.speed;

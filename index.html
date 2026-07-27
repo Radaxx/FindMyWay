@@ -20,10 +20,35 @@
       <div class="panel__body">
         <!-- 1. Départ -->
         <section class="field">
-          <label class="field__label">1. Point de départ</label>
+          <label class="field__label" for="input-address">1. Point de départ</label>
+
+          <div class="search">
+            <div class="start-row">
+              <input type="search" id="input-address" placeholder="Adresse, ville, lieu…"
+                     autocomplete="off" spellcheck="false" />
+              <button type="button" class="btn btn--icon" id="btn-locate" title="Utiliser ma position">📍</button>
+            </div>
+            <ul class="suggestions is-hidden" id="address-results" role="listbox" aria-label="Résultats"></ul>
+          </div>
+
           <div class="start-row">
-            <output class="start-coords" id="start-coords">Clique sur la carte pour placer le départ</output>
-            <button type="button" class="btn btn--icon" id="btn-locate" title="Utiliser ma position">📍</button>
+            <output class="start-coords" id="start-coords">Clique sur la carte ou cherche une adresse</output>
+            <button type="button" class="btn btn--icon" id="btn-save-place" title="Enregistrer ce lieu" disabled>☆</button>
+          </div>
+
+          <!-- Enregistrement d'un lieu -->
+          <div class="save-row is-hidden" id="save-row">
+            <input type="text" id="input-place-name" placeholder="Nom du lieu (ex. Domicile)" maxlength="40" />
+            <button type="button" class="btn btn--icon btn--ok" id="btn-save-confirm" title="Enregistrer">✓</button>
+            <button type="button" class="btn btn--icon" id="btn-save-cancel" title="Annuler">✕</button>
+          </div>
+
+          <!-- Lieux enregistrés -->
+          <div class="start-row is-hidden" id="places-row">
+            <select id="select-place" aria-label="Lieux enregistrés">
+              <option value="">Lieux enregistrés…</option>
+            </select>
+            <button type="button" class="btn btn--icon" id="btn-delete-place" title="Supprimer ce lieu" disabled>🗑</button>
           </div>
         </section>
 
@@ -110,6 +135,7 @@
 
       <footer class="panel__footer">
         Données <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> ·
+        adresses <a href="https://nominatim.openstreetmap.org/" target="_blank" rel="noopener">Nominatim</a> ·
         routage <a href="https://routing.openstreetmap.de/" target="_blank" rel="noopener">OSRM</a>/<a href="https://brouter.de/" target="_blank" rel="noopener">BRouter</a> ·
         altitudes <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>
       </footer>

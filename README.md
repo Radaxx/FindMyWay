@@ -24,8 +24,11 @@ GitHub Pages, Netlify, un dossier `public/` de n'importe quel hébergeur, etc.
 
 ### En pratique
 
-1. **Point de départ** : clique sur la carte (ou 📍 pour ta position). Le
-   marqueur reste déplaçable.
+1. **Point de départ** : tape une adresse, clique sur la carte, ou utilise 📍
+   pour ta position. Le marqueur reste déplaçable. Le bouton ☆ enregistre
+   l'endroit sous un nom (« Domicile », « Bureau »…) : il apparaît ensuite dans
+   la liste déroulante et se rappelle en un clic. 🗑 supprime le lieu
+   sélectionné.
 2. **Activité** : vélo (routage cyclable) ou course à pied (routage piéton).
 3. **Type de parcours** : boucle (retour au départ) ou aller simple.
 4. **Objectif** : une distance en km, ou une durée en minutes convertie en
@@ -56,11 +59,25 @@ L'ajustement est amorti pour éviter les oscillations et s'arrête dès que l'é
 passe sous 4 % (7 essais au maximum, en pratique 2 ou 3). Le meilleur tracé
 obtenu est conservé, et l'écart résiduel est affiché s'il reste notable.
 
+### Pas d'impasses ni de demi-tours
+
+Un point de passage se cale parfois sur une voie sans issue : le routeur y
+entre, va au bout, puis repart en sens inverse. `js/simplify.js` détecte ces
+replis sur la trace — deux brins qui se superposent (à 15 m près) **et** sont
+parcourus en sens opposé (plus de 120° d'écart) — et supprime la portion entre
+les deux passages à la jonction. Le tracé reste continu, raccourcit, et la
+calibration en tient compte à l'essai suivant.
+
+Un simple virage en épingle (moins de 40 m) est conservé, tout comme le tout
+début et la toute fin du parcours : si le domicile est lui-même au fond d'une
+impasse, il faut bien en sortir.
+
 ## Services utilisés
 
 | Rôle | Service | Remarque |
 | --- | --- | --- |
 | Fond de carte | [OpenStreetMap](https://www.openstreetmap.org/) | tuiles standard |
+| Adresses | [Nominatim](https://nominatim.openstreetmap.org/) | recherche et géocodage inverse, saisie temporisée |
 | Routage | [OSRM FOSSGIS](https://routing.openstreetmap.de/) (`routed-bike` / `routed-foot`) | sans clé |
 | Routage de secours | [BRouter](https://brouter.de/) (`trekking` / `hiking-beta`) | si OSRM répond mal |
 | Altitudes | [Open-Meteo Elevation](https://open-meteo.com/en/docs/elevation-api) | D+ et profil, best-effort |
@@ -76,12 +93,25 @@ index.html            interface
 css/styles.css        styles (thème clair/sombre, responsive)
 js/app.js             carte Leaflet, formulaire, orchestration
 js/planner.js         génération et calibration des parcours
+js/simplify.js        suppression des impasses parcourues aller-retour
 js/routing.js         appels OSRM + repli BRouter
+js/geocoding.js       recherche d'adresse (Nominatim)
+js/places.js          lieux de départ enregistrés (localStorage)
 js/elevation.js       profil altimétrique et dénivelé
 js/gpx.js             génération et téléchargement du GPX
 js/geo.js             utilitaires géographiques
+tests/run.mjs         tests de la logique de tracé (node, sans réseau)
 vendor/leaflet/       Leaflet 1.9.4 (embarqué, pas de CDN)
 ```
+
+## Tests
+
+```bash
+node tests/run.mjs
+```
+
+Ils couvrent la calibration des distances et le nettoyage des allers-retours,
+avec un routeur simulé — donc sans réseau ni navigateur.
 
 ## Limites connues
 
@@ -89,5 +119,8 @@ vendor/leaflet/       Leaflet 1.9.4 (embarqué, pas de CDN)
   120 points : c'est un ordre de grandeur, pas une mesure barométrique.
 - Sur un point de départ isolé (chemin privé, forêt), le routeur peut ne rien
   trouver : déplace le marqueur vers une route proche.
+- Les lieux enregistrés vivent dans le navigateur (localStorage) : ils ne
+  suivent pas d'un appareil à l'autre et disparaissent si tu effaces les données
+  du site.
 - L'aller simple ne prévoit pas le retour — pense au train, à la voiture, ou
   choisis une boucle.

@@ -40,6 +40,41 @@ export function destination(origin, bearingDeg, dist) {
   };
 }
 
+/** Cap initial (degrés) pour aller de `a` vers `b`. */
+export function bearing(a, b) {
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const y = Math.sin(dLng) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+/** Écart angulaire (0-180°) entre deux caps. */
+export function angleBetween(b1, b2) {
+  const diff = Math.abs(b1 - b2) % 360;
+  return diff > 180 ? 360 - diff : diff;
+}
+
+/**
+ * Distance d'un point au segment [a, b], via une projection locale en mètres
+ * (suffisamment précise à l'échelle de quelques kilomètres).
+ */
+export function distanceToSegment(p, a, b) {
+  const latRef = toRad((a.lat + b.lat) / 2);
+  const x = (pt) => toRad(pt.lng) * Math.cos(latRef) * R;
+  const y = (pt) => toRad(pt.lat) * R;
+
+  const [px, py] = [x(p), y(p)];
+  const [ax, ay] = [x(a), y(a)];
+  const dx = x(b) - ax;
+  const dy = y(b) - ay;
+
+  const len2 = dx * dx + dy * dy;
+  const t = len2 > 0 ? clamp(((px - ax) * dx + (py - ay) * dy) / len2, 0, 1) : 0;
+  return Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
+}
+
 /** Longueur cumulée d'une polyligne [{lat, lng}, ...]. */
 export function pathLength(coords) {
   let total = 0;

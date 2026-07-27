@@ -4,8 +4,9 @@
 // service de routage, puis on ajuste l'échelle de la figure jusqu'à tomber sur
 // la distance demandée (le réseau routier rallonge toujours le tracé théorique).
 
-import { destination, seededRandom, clamp } from './geo.js';
+import { destination, seededRandom, clamp, pathLength } from './geo.js';
 import { route } from './routing.js';
+import { removeOutAndBack } from './simplify.js';
 
 const TOLERANCE = 0.04; // écart relatif accepté par rapport à la cible
 const MAX_ITERATIONS = 7;
@@ -93,6 +94,8 @@ async function refine({ start, build, targetDistance, sport, initialScale, onPro
 
     if (!result.distance) throw lastError ?? new Error('Itinéraire vide.');
 
+    result = trimSpurs(result);
+
     const error = Math.abs(result.distance - targetDistance) / targetDistance;
     if (!best || error < best.error) best = { ...result, error, scale };
     if (error <= TOLERANCE) break;
@@ -106,4 +109,24 @@ async function refine({ start, build, targetDistance, sport, initialScale, onPro
 
   if (!best) throw lastError ?? new Error("Aucun itinéraire n'a pu être calculé.");
   return best;
+}
+
+/**
+ * Retire les impasses parcourues dans les deux sens et réajuste la distance
+ * annoncée au prorata de la trace conservée.
+ */
+function trimSpurs(result) {
+  const { coords, removed } = removeOutAndBack(result.coords);
+  if (!removed) return result;
+
+  const before = pathLength(result.coords);
+  const ratio = before > 0 ? pathLength(coords) / before : 1;
+
+  return {
+    ...result,
+    coords,
+    distance: result.distance * ratio,
+    duration: result.duration * ratio,
+    trimmed: removed,
+  };
 }
