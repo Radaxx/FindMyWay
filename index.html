@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>FindMyWay — Planificateur d'itinéraires vélo &amp; course à pied</title>
+  <meta name="description" content="Trace une boucle ou un aller simple à partir d'un point de départ, d'une distance ou d'une durée cible, puis exporte le parcours en GPX." />
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
+  <link rel="stylesheet" href="css/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧭</text></svg>" />
+</head>
+<body>
+  <div class="app">
+    <aside class="panel" id="panel">
+      <header class="panel__header">
+        <h1><span class="logo">🧭</span> FindMyWay</h1>
+        <p class="subtitle">Trace ta sortie, exporte ton GPX.</p>
+      </header>
+
+      <div class="panel__body">
+        <!-- 1. Départ -->
+        <section class="field">
+          <label class="field__label">1. Point de départ</label>
+          <div class="start-row">
+            <output class="start-coords" id="start-coords">Clique sur la carte pour placer le départ</output>
+            <button type="button" class="btn btn--icon" id="btn-locate" title="Utiliser ma position">📍</button>
+          </div>
+        </section>
+
+        <!-- 2. Activité -->
+        <section class="field">
+          <label class="field__label">2. Activité</label>
+          <div class="segmented" id="seg-sport" role="radiogroup" aria-label="Activité">
+            <button type="button" role="radio" data-value="bike" aria-checked="true" class="is-active">🚴 Vélo</button>
+            <button type="button" role="radio" data-value="run" aria-checked="false">🏃 Course</button>
+          </div>
+        </section>
+
+        <!-- 3. Type de parcours -->
+        <section class="field">
+          <label class="field__label">3. Type de parcours</label>
+          <div class="segmented" id="seg-shape" role="radiogroup" aria-label="Type de parcours">
+            <button type="button" role="radio" data-value="loop" aria-checked="true" class="is-active">🔄 Boucle</button>
+            <button type="button" role="radio" data-value="oneway" aria-checked="false">➡️ Aller simple</button>
+          </div>
+        </section>
+
+        <!-- 4. Objectif -->
+        <section class="field">
+          <label class="field__label">4. Objectif</label>
+          <div class="segmented segmented--sm" id="seg-goal" role="radiogroup" aria-label="Type d'objectif">
+            <button type="button" role="radio" data-value="distance" aria-checked="true" class="is-active">Distance</button>
+            <button type="button" role="radio" data-value="time" aria-checked="false">Temps</button>
+          </div>
+
+          <div class="inputs">
+            <div class="input-group" id="group-distance">
+              <input type="number" id="input-distance" min="1" max="300" step="0.5" value="30" inputmode="decimal" />
+              <span class="unit">km</span>
+            </div>
+            <div class="input-group is-hidden" id="group-time">
+              <input type="number" id="input-time" min="10" max="600" step="5" value="90" inputmode="numeric" />
+              <span class="unit">min</span>
+            </div>
+            <div class="input-group">
+              <input type="number" id="input-speed" min="3" max="45" step="0.5" value="25" inputmode="decimal" />
+              <span class="unit">km/h</span>
+            </div>
+          </div>
+          <p class="hint" id="goal-hint"></p>
+        </section>
+
+        <!-- 5. Direction -->
+        <section class="field">
+          <label class="field__label" for="select-direction">5. Direction générale</label>
+          <select id="select-direction">
+            <option value="auto" selected>Aléatoire</option>
+            <option value="0">Nord</option>
+            <option value="45">Nord-Est</option>
+            <option value="90">Est</option>
+            <option value="135">Sud-Est</option>
+            <option value="180">Sud</option>
+            <option value="225">Sud-Ouest</option>
+            <option value="270">Ouest</option>
+            <option value="315">Nord-Ouest</option>
+          </select>
+        </section>
+
+        <div class="actions">
+          <button type="button" class="btn btn--primary" id="btn-plan" disabled>Tracer l'itinéraire</button>
+          <button type="button" class="btn" id="btn-variant" disabled>Autre variante</button>
+        </div>
+
+        <p class="status" id="status" role="status" aria-live="polite"></p>
+
+        <!-- Résultat -->
+        <section class="result is-hidden" id="result">
+          <div class="stats">
+            <div class="stat"><span class="stat__value" id="stat-distance">—</span><span class="stat__label">distance</span></div>
+            <div class="stat"><span class="stat__value" id="stat-time">—</span><span class="stat__label">durée estimée</span></div>
+            <div class="stat"><span class="stat__value" id="stat-elevation">—</span><span class="stat__label">dénivelé +</span></div>
+          </div>
+          <div class="profile is-hidden" id="profile">
+            <svg id="profile-svg" viewBox="0 0 300 90" preserveAspectRatio="none" aria-label="Profil altimétrique"></svg>
+            <div class="profile__axis"><span id="profile-min">—</span><span id="profile-max">—</span></div>
+          </div>
+          <button type="button" class="btn btn--accent" id="btn-gpx">⬇ Exporter en GPX</button>
+        </section>
+      </div>
+
+      <footer class="panel__footer">
+        Données <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> ·
+        routage <a href="https://routing.openstreetmap.de/" target="_blank" rel="noopener">OSRM</a>/<a href="https://brouter.de/" target="_blank" rel="noopener">BRouter</a> ·
+        altitudes <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>
+      </footer>
+    </aside>
+
+    <main class="map-wrap">
+      <div id="map"></div>
+      <button type="button" class="panel-toggle" id="panel-toggle" aria-label="Afficher/masquer le panneau">☰</button>
+    </main>
+  </div>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
