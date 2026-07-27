@@ -52,27 +52,42 @@
           </div>
         </section>
 
-        <!-- 2. Activité -->
+        <!-- 2. Points de passage -->
         <section class="field">
-          <label class="field__label">2. Activité</label>
+          <label class="field__label">2. Points de passage <span class="count" id="via-count"></span></label>
+          <div class="start-row">
+            <button type="button" class="btn" id="btn-add-via">📌 Ajouter un point</button>
+            <button type="button" class="btn btn--icon" id="btn-clear-vias" title="Tout effacer" disabled>🗑</button>
+          </div>
+          <ol class="via-list is-hidden" id="via-list"></ol>
+          <p class="hint" id="via-hint">Facultatif : l'itinéraire passera par ces points.</p>
+        </section>
+
+        <!-- 3. Activité -->
+        <section class="field">
+          <label class="field__label">3. Activité</label>
           <div class="segmented" id="seg-sport" role="radiogroup" aria-label="Activité">
             <button type="button" role="radio" data-value="bike" aria-checked="true" class="is-active">🚴 Vélo</button>
             <button type="button" role="radio" data-value="run" aria-checked="false">🏃 Course</button>
           </div>
+          <label class="check" id="signposted-row">
+            <input type="checkbox" id="input-signposted" checked />
+            <span>Privilégier les itinéraires balisés<span class="check__hint" id="signposted-hint"></span></span>
+          </label>
         </section>
 
-        <!-- 3. Type de parcours -->
+        <!-- 4. Type de parcours -->
         <section class="field">
-          <label class="field__label">3. Type de parcours</label>
+          <label class="field__label">4. Type de parcours</label>
           <div class="segmented" id="seg-shape" role="radiogroup" aria-label="Type de parcours">
             <button type="button" role="radio" data-value="loop" aria-checked="true" class="is-active">🔄 Boucle</button>
             <button type="button" role="radio" data-value="oneway" aria-checked="false">➡️ Aller simple</button>
           </div>
         </section>
 
-        <!-- 4. Objectif -->
+        <!-- 5. Objectif -->
         <section class="field">
-          <label class="field__label">4. Objectif</label>
+          <label class="field__label">5. Objectif</label>
           <div class="segmented segmented--sm" id="seg-goal" role="radiogroup" aria-label="Type d'objectif">
             <button type="button" role="radio" data-value="distance" aria-checked="true" class="is-active">Distance</button>
             <button type="button" role="radio" data-value="time" aria-checked="false">Temps</button>
@@ -95,9 +110,9 @@
           <p class="hint" id="goal-hint"></p>
         </section>
 
-        <!-- 5. Direction -->
+        <!-- 6. Direction -->
         <section class="field">
-          <label class="field__label" for="select-direction">5. Direction générale</label>
+          <label class="field__label" for="select-direction">6. Direction générale</label>
           <select id="select-direction">
             <option value="auto" selected>Aléatoire</option>
             <option value="0">Nord</option>
@@ -141,7 +156,7 @@
       </footer>
     </aside>
 
-    <main class="map-wrap">
+    <main class="map-wrap" id="map-wrap">
       <div id="map"></div>
       <button type="button" class="panel-toggle" id="panel-toggle" aria-label="Afficher/masquer le panneau">☰</button>
     </main>

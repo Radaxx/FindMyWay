@@ -6,6 +6,7 @@ import { fetchElevationProfile, interpolateElevations } from './elevation.js';
 import { buildGpx, downloadGpx, gpxFilename } from './gpx.js';
 import { searchAddress, reverseGeocode } from './geocoding.js';
 import { listPlaces, savePlace, deletePlace, getPlace, findPlaceNear } from './places.js';
+import { setupLayers } from './layers.js';
 
 const STORAGE_KEY = 'findmyway.settings.v1';
 const DEFAULT_SPEED = { bike: 25, run: 10 };
@@ -19,6 +20,9 @@ const state = {
   shape: 'loop',
   goal: 'distance',
   bearing: null, // cap retenu pour le tracé courant
+  vias: [], // points de passage imposés par l'utilisateur
+  addingVia: false,
+  signposted: true, // privilégier les itinéraires balisés
   variant: 0,
   route: null,
   profile: null,
@@ -26,6 +30,8 @@ const state = {
 
 const el = {};
 let map;
+let layers;
+let viaMarkers = [];
 let startMarker;
 let endMarker;
 let routeLine;
@@ -39,11 +45,15 @@ function init() {
   initMap();
   bindEvents();
   refreshPlaces();
+  refreshVias();
+  updateSignposted();
   updateGoalHint();
 }
 
 function cacheDom() {
   const ids = [
+    'map-wrap', 'btn-add-via', 'btn-clear-vias', 'via-list', 'via-count', 'via-hint',
+    'input-signposted', 'signposted-row', 'signposted-hint',
     'input-address', 'address-results', 'btn-save-place', 'save-row', 'input-place-name',
     'btn-save-confirm', 'btn-save-cancel', 'places-row', 'select-place', 'btn-delete-place',
     'panel', 'panel-toggle', 'start-coords', 'btn-locate', 'seg-sport', 'seg-shape',
@@ -64,13 +74,14 @@ function camel(id) {
 function initMap() {
   const center = state.start ?? { lat: 48.8566, lng: 2.3522 }; // Paris par défaut
   map = L.map('map', { zoomControl: true }).setView([center.lat, center.lng], state.start ? 13 : 11);
+  layers = setupLayers(map, state.sport);
 
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-  }).addTo(map);
+  map.on('click', (e) => {
+    const point = { lat: e.latlng.lat, lng: e.latlng.lng };
+    if (state.addingVia) addVia(point);
+    else setStart(point);
+  });
 
-  map.on('click', (e) => setStart({ lat: e.latlng.lat, lng: e.latlng.lng }));
   if (state.start) setStart(state.start, { fly: false, label: state.startLabel });
 }
 
@@ -146,6 +157,102 @@ function drawRoute(coords, shape) {
 
   startMarker.setZIndexOffset(1000);
   map.fitBounds(routeLine.getBounds(), { padding: [40, 40] });
+}
+
+/* ------------------------------------------------------ points de passage --- */
+
+function bindVias() {
+  el.btnAddVia.addEventListener('click', () => setAddingVia(!state.addingVia));
+
+  el.btnClearVias.addEventListener('click', () => {
+    state.vias = [];
+    setAddingVia(false);
+    refreshVias();
+    saveSettings();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && state.addingVia) setAddingVia(false);
+  });
+}
+
+function setAddingVia(active) {
+  state.addingVia = active;
+  el.btnAddVia.classList.toggle('is-active', active);
+  el.btnAddVia.textContent = active ? '✓ Terminer' : '📌 Ajouter un point';
+  el.mapWrap.classList.toggle('is-adding', active);
+  setStatus(active ? 'Clique sur la carte pour ajouter un point de passage.' : '');
+}
+
+function addVia(point) {
+  state.vias.push(point);
+  refreshVias();
+  saveSettings();
+}
+
+function removeVia(index) {
+  state.vias.splice(index, 1);
+  refreshVias();
+  saveSettings();
+}
+
+/** Redessine marqueurs et liste après toute modification des points de passage. */
+function refreshVias() {
+  for (const marker of viaMarkers) marker.remove();
+  viaMarkers = state.vias.map((point, index) => {
+    const marker = L.marker([point.lat, point.lng], {
+      icon: pinIcon(String(index + 1), 'marker-pin--via'),
+      draggable: true,
+      title: 'Point de passage (glisser pour déplacer, cliquer pour retirer)',
+    }).addTo(map);
+
+    marker.on('dragend', () => {
+      const p = marker.getLatLng();
+      state.vias[index] = { lat: p.lat, lng: p.lng };
+      refreshVias();
+      saveSettings();
+    });
+    marker.on('click', (e) => {
+      L.DomEvent.stop(e); // sinon la carte reçoit le clic et déplace le départ
+      removeVia(index);
+    });
+    return marker;
+  });
+
+  el.viaList.innerHTML = '';
+  for (const [index, point] of state.vias.entries()) {
+    const item = document.createElement('li');
+    const label = document.createElement('span');
+    label.textContent = `${point.lat.toFixed(4)}, ${point.lng.toFixed(4)}`;
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.title = 'Retirer ce point';
+    remove.textContent = '✕';
+    remove.addEventListener('click', () => removeVia(index));
+
+    item.append(label, remove);
+    el.viaList.append(item);
+  }
+
+  const count = state.vias.length;
+  el.viaList.classList.toggle('is-hidden', count === 0);
+  el.viaCount.textContent = count || '';
+  el.btnClearVias.disabled = count === 0;
+  el.viaHint.textContent = count
+    ? "L'itinéraire passera par ces points, dans l'ordre."
+    : "Facultatif : l'itinéraire passera par ces points.";
+}
+
+/** État de l'option « itinéraires balisés » (réglage propre au profil vélo). */
+function updateSignposted() {
+  const available = state.sport === 'bike';
+  el.inputSignposted.checked = state.signposted;
+  el.inputSignposted.disabled = !available;
+  el.signpostedRow.classList.toggle('is-disabled', !available);
+  el.signpostedHint.textContent = available
+    ? 'Véloroutes, voies vertes et boucles cyclo signalisées (OSM).'
+    : 'Réglage disponible pour le vélo uniquement.';
 }
 
 /* ------------------------------------------------------- adresses & lieux --- */
@@ -341,11 +448,19 @@ function syncPlaceSelection() {
 
 function bindEvents() {
   bindPlaces();
+  bindVias();
 
   bindSegmented(el.segSport, (value) => {
     state.sport = value;
     el.inputSpeed.value = DEFAULT_SPEED[value];
+    updateSignposted();
+    layers.followSport(value);
     updateGoalHint();
+    saveSettings();
+  });
+
+  el.inputSignposted.addEventListener('change', () => {
+    state.signposted = el.inputSignposted.checked;
     saveSettings();
   });
 
@@ -472,6 +587,8 @@ async function generate({ newVariant }) {
       sport: state.sport,
       shape: state.shape,
       bearing: state.bearing,
+      vias: state.vias,
+      preferSignposted: state.signposted && state.sport === 'bike',
       seed: state.variant * 7919 + 13,
       onProgress: (msg) => setStatus(msg),
       signal,
@@ -504,6 +621,12 @@ function showResult(result, targetDistance) {
   el.profile.classList.add('is-hidden');
   el.result.classList.remove('is-hidden');
   el.btnVariant.disabled = false;
+
+  // Les points de passage imposent un plancher : le dire plutôt que parler d'écart.
+  if (result.minimal) {
+    return `Tes points de passage imposent déjà ${(result.distance / 1000).toFixed(1)} km,` +
+      " soit plus que l'objectif.";
+  }
 
   // On ne signale l'écart que s'il dépasse nettement la tolérance de calibration.
   const gap = (result.distance - targetDistance) / 1000;
@@ -588,6 +711,8 @@ function saveSettings() {
       JSON.stringify({
         start: state.start,
         startLabel: state.startLabel,
+        vias: state.vias,
+        signposted: state.signposted,
         sport: state.sport,
         shape: state.shape,
         goal: state.goal,
@@ -615,6 +740,10 @@ function restoreSettings() {
     state.start = saved.start;
     state.startLabel = saved.startLabel ?? null;
   }
+  if (Array.isArray(saved.vias)) {
+    state.vias = saved.vias.filter((p) => Number.isFinite(p?.lat) && Number.isFinite(p?.lng));
+  }
+  if (typeof saved.signposted === 'boolean') state.signposted = saved.signposted;
   if (saved.distance) el.inputDistance.value = saved.distance;
   if (saved.time) el.inputTime.value = saved.time;
   if (saved.speed) el.inputSpeed.value = saved.speed;

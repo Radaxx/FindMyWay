@@ -6,6 +6,7 @@
   --border: #e2e6ec;
   --accent: #f4511e;
   --accent-soft: #fdece6;
+  --via: #7b4dd8;
   --primary: #1f6feb;
   --track: #f4511e;
   --radius: 10px;
@@ -21,6 +22,7 @@
     --border: #26313d;
     --accent: #ff7043;
     --accent-soft: #33211a;
+    --via: #9a72e8;
     --primary: #4f8ef7;
     --shadow: 0 1px 3px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
   }
@@ -330,6 +332,111 @@ select:focus {
   min-height: 16px;
 }
 
+/* ---------- Points de passage ---------- */
+
+.count {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 6px;
+  margin-left: 2px;
+  font-size: 11px;
+  text-align: center;
+  color: #fff;
+  background: var(--via);
+  border-radius: 9px;
+}
+
+.count:empty { display: none; }
+
+.via-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  counter-reset: via;
+}
+
+.via-list.is-hidden { display: none; }
+
+.via-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 6px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  background: var(--bg);
+  border-radius: 8px;
+}
+
+.via-list li::before {
+  counter-increment: via;
+  content: counter(via);
+  display: grid;
+  place-items: center;
+  flex: 0 0 20px;
+  height: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--via);
+  border-radius: 50%;
+}
+
+.via-list li span { flex: 1; }
+
+.via-list li button {
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.via-list li button:hover { color: var(--text); background: var(--panel); }
+
+/* Mode « ajout d'un point » */
+.map-wrap.is-adding #map { cursor: crosshair; }
+
+.btn.is-active {
+  color: #fff;
+  background: var(--accent);
+  border-color: transparent;
+}
+
+/* ---------- Case à cocher ---------- */
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.check input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 1px 0 0;
+  accent-color: var(--primary);
+}
+
+.check.is-disabled { opacity: .5; cursor: not-allowed; }
+
+.check__hint {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+}
+
 /* ---------- Boutons ---------- */
 
 .actions {
@@ -491,6 +598,14 @@ select:focus {
 }
 
 .marker-pin--end { background: var(--accent); }
+
+.marker-pin--via {
+  width: 22px;
+  height: 22px;
+  font-size: 11px;
+  background: var(--via);
+  cursor: pointer;
+}
 
 .leaflet-container { font: inherit; }
 

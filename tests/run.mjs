@@ -5,6 +5,7 @@
 import { destination, distance, pathLength } from '../js/geo.js';
 import { removeOutAndBack } from '../js/simplify.js';
 import { planRoute } from '../js/planner.js';
+import { stickToCycleRoutes } from '../js/routing.js';
 
 let failures = 0;
 
@@ -94,11 +95,21 @@ console.log('\nAllers-retours (js/simplify.js)');
 
 console.log('\nCalibration (js/planner.js)');
 
-/** Routeur simulé : détour de 30 %, et une impasse à chaque point de passage. */
+/**
+ * Routeur simulé : détour de 30 %, et si demandé une impasse à chaque point de
+ * passage. Répond au format BRouter (fournisseur principal) comme au format
+ * OSRM (repli), selon l'URL appelée.
+ */
 function fakeRouter({ deadEnds = false } = {}) {
   globalThis.fetch = async (url) => {
-    const part = decodeURIComponent(String(url)).split('/driving/')[1].split('?')[0];
-    const via = part.split(';').map((s) => {
+    const target = decodeURIComponent(String(url));
+    const brouter = target.includes('lonlats=');
+
+    const part = brouter
+      ? target.split('lonlats=')[1].split('&')[0]
+      : target.split('/driving/')[1].split('?')[0];
+
+    const via = part.split(brouter ? '|' : ';').map((s) => {
       const [lng, lat] = s.split(',').map(Number);
       return { lat, lng };
     });
@@ -119,16 +130,20 @@ function fakeRouter({ deadEnds = false } = {}) {
     }
     coords.push(via.at(-1));
 
+    const geometry = { coordinates: coords.map((p) => [p.lng, p.lat]) };
+    const length = pathLength(coords) * 1.3;
+
     return {
       ok: true,
-      json: async () => ({
-        code: 'Ok',
-        routes: [{
-          distance: pathLength(coords) * 1.3,
-          duration: 3600,
-          geometry: { coordinates: coords.map((p) => [p.lng, p.lat]) },
-        }],
-      }),
+      json: async () =>
+        brouter
+          ? {
+              features: [{
+                geometry,
+                properties: { 'track-length': String(length), 'total-time': '3600' },
+              }],
+            }
+          : { code: 'Ok', routes: [{ distance: length, duration: 3600, geometry }] },
     };
   };
 }
@@ -157,6 +172,74 @@ for (const shape of ['loop', 'oneway']) {
   check(`${shape} : impasses retirées et distance tenue`,
     removeOutAndBack(res.coords).removed === 0 && Math.abs(errPct) <= 5,
     `${(res.distance / 1000).toFixed(2)} km (${errPct >= 0 ? '+' : ''}${errPct.toFixed(1)} %)`);
+}
+
+/* ------------------------------------------------ points de passage imposés --- */
+
+console.log('\nPoints de passage (js/planner.js)');
+
+fakeRouter();
+{
+  // Deux points à l'est du départ : le tracé doit y passer, dans l'ordre.
+  const vias = [destination(home, 90, 3000), destination(home, 135, 4000)];
+
+  for (const [shape, target] of [['loop', 20000], ['oneway', 20000]]) {
+    const res = await planRoute({
+      start: home, targetDistance: target, sport: 'bike', shape, bearing: 90, seed: 7, vias,
+    });
+
+    const passesBy = vias.every((v) => res.coords.some((p) => distance(p, v) < 150));
+    const order = vias.map((v) =>
+      res.coords.reduce((best, p, i) => (distance(p, v) < distance(res.coords[best], v) ? i : best), 0)
+    );
+    const errPct = ((res.distance - target) / target) * 100;
+
+    check(`${shape} : passe par les points, dans l'ordre, à ±5 %`,
+      passesBy && order[0] < order[1] && Math.abs(errPct) <= 5,
+      `${(res.distance / 1000).toFixed(2)} km (${errPct >= 0 ? '+' : ''}${errPct.toFixed(1)} %)`);
+  }
+}
+
+{
+  // Point de passage très éloigné : la cible est intenable, on le signale.
+  const vias = [destination(home, 0, 25000)];
+  const res = await planRoute({
+    start: home, targetDistance: 10000, sport: 'bike', shape: 'loop', bearing: 0, seed: 3, vias,
+  });
+  check('cible intenable signalée', res.minimal === true && res.distance > 10000,
+    `plancher ${(res.distance / 1000).toFixed(1)} km`);
+}
+
+{
+  // Boucle avec un seul point : le renflement doit éviter le simple aller-retour.
+  const vias = [destination(home, 45, 2000)];
+  const res = await planRoute({
+    start: home, targetDistance: 15000, sport: 'bike', shape: 'loop', bearing: 45, seed: 11, vias,
+  });
+  const errPct = Math.abs((res.distance - 15000) / 15000) * 100;
+  check('boucle gonflée jusqu’à la cible', errPct <= 5 && distance(res.coords[0], res.coords.at(-1)) < 50,
+    `${(res.distance / 1000).toFixed(2)} km`);
+}
+
+/* ------------------------------------------------- profil itinéraires balisés --- */
+
+console.log('\nProfil BRouter (js/routing.js)');
+
+{
+  const profile = [
+    '# trekking profile',
+    'assign   consider_elevation   true',
+    'assign   stick_to_cycleroutes   false  # %stick_to_cycleroutes% | Follow cycleroutes | boolean',
+    'assign   allow_ferries   true',
+  ].join('\n');
+
+  const patched = stickToCycleRoutes(profile);
+  check('paramètre stick_to_cycleroutes activé',
+    /assign\s+stick_to_cycleroutes\s+true/.test(patched) &&
+    patched.includes('consider_elevation   true') &&
+    patched.split('\n').length === profile.split('\n').length);
+  check('profil inconnu refusé (repli sur le profil standard)',
+    stickToCycleRoutes('assign consider_elevation true') === null);
 }
 
 console.log(failures ? `\n${failures} test(s) en échec.` : '\nTous les tests passent.');

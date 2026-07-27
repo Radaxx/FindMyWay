@@ -29,16 +29,27 @@ GitHub Pages, Netlify, un dossier `public/` de n'importe quel hébergeur, etc.
    l'endroit sous un nom (« Domicile », « Bureau »…) : il apparaît ensuite dans
    la liste déroulante et se rappelle en un clic. 🗑 supprime le lieu
    sélectionné.
-2. **Activité** : vélo (routage cyclable) ou course à pied (routage piéton).
-3. **Type de parcours** : boucle (retour au départ) ou aller simple.
-4. **Objectif** : une distance en km, ou une durée en minutes convertie en
+2. **Points de passage** (facultatif) : « 📌 Ajouter un point », puis un clic
+   sur la carte par point à traverser. L'itinéraire les enchaîne dans l'ordre.
+   Un marqueur se déplace au glisser, se retire d'un clic.
+3. **Activité** : vélo (routage cyclable) ou course à pied (routage piéton).
+   L'option **Privilégier les itinéraires balisés** colle aux véloroutes, voies
+   vertes et boucles cyclo signalisées.
+4. **Type de parcours** : boucle (retour au départ) ou aller simple.
+5. **Objectif** : une distance en km, ou une durée en minutes convertie en
    distance via la vitesse moyenne indiquée (25 km/h à vélo, 10 km/h en course
    par défaut).
-5. **Direction générale** : imposée (N, NE, E…) ou aléatoire.
-6. **Tracer l'itinéraire**, puis **Autre variante** autant de fois que voulu
+6. **Direction générale** : imposée (N, NE, E…) ou aléatoire.
+7. **Tracer l'itinéraire**, puis **Autre variante** autant de fois que voulu
    pour obtenir un autre parcours avec les mêmes contraintes.
-7. **Exporter en GPX** : fichier compatible Garmin, Wahoo, Komoot, Strava,
+8. **Exporter en GPX** : fichier compatible Garmin, Wahoo, Komoot, Strava,
    OpenRunner…
+
+Le sélecteur en haut à droite de la carte ajoute des calques : itinéraires
+cyclables balisés, sentiers de randonnée, et traces GPS publiques d'OSM — de
+quoi vérifier d'un coup d'œil si un tracé suit les parcours fréquentés. Le
+calque proposé suit l'activité choisie tant que tu n'as pas fait ton propre
+choix.
 
 Les réglages et le dernier point de départ sont mémorisés dans le navigateur.
 
@@ -54,10 +65,34 @@ d'ici ». La calibration se fait donc par itérations (`js/planner.js`) :
 - **Aller simple** : même principe avec un point d'arrivée placé à ~78 % de la
   distance cible à vol d'oiseau (le réseau routier rallonge toujours le tracé),
   plus un point intermédiaire décalé latéralement.
+- **Avec points de passage imposés** : le tracé qui les relie devient le
+  plancher — impossible de faire plus court. S'il reste de la distance à
+  couvrir, chaque portion est gonflée latéralement, alternativement d'un côté
+  puis de l'autre (sinon une boucle à un seul point de passage serait un simple
+  aller-retour). Le facteur de renflement est estimé analytiquement — une
+  portion gonflée d'un facteur `f` s'allonge d'environ `√(1 + 4f²)` — puis
+  affiné sur la distance réellement mesurée. Si les points imposent déjà plus
+  que l'objectif, l'application le dit au lieu de tricher.
 
 L'ajustement est amorti pour éviter les oscillations et s'arrête dès que l'écart
 passe sous 4 % (7 essais au maximum, en pratique 2 ou 3). Le meilleur tracé
 obtenu est conservé, et l'écart résiduel est affiché s'il reste notable.
+
+### Coller aux itinéraires fréquentés
+
+Il n'existe pas d'équivalent libre de la heatmap Strava : elle n'est exposée par
+aucune API, et l'accord API interdit désormais aux applis tierces d'afficher ces
+données. Le meilleur substitut réutilisable est dans OSM : les **relations
+d'itinéraires** (`route=bicycle` avec ses réseaux `icn`/`ncn`/`rcn`/`lcn`,
+`route=hiking`) décrivent les parcours **balisés sur le terrain**, donc ceux qui
+sont réellement empruntés.
+
+BRouter les pondère nativement. L'option « Privilégier les itinéraires balisés »
+récupère le profil `trekking`, y bascule le paramètre `stick_to_cycleroutes`,
+téléverse cette variante (`POST /brouter/profile`) et route avec l'identifiant
+renvoyé — BRouter n'acceptant pas de paramètre de profil dans l'URL. Tout est
+best-effort : au moindre accroc on retombe sur le profil standard, puis sur
+OSRM.
 
 ### Pas d'impasses ni de demi-tours
 
@@ -76,10 +111,12 @@ impasse, il faut bien en sortir.
 
 | Rôle | Service | Remarque |
 | --- | --- | --- |
-| Fond de carte | [OpenStreetMap](https://www.openstreetmap.org/) | tuiles standard |
+| Fond de carte | [OpenStreetMap](https://www.openstreetmap.org/) · [CyclOSM](https://www.cyclosm.org/) | tuiles standard ou orientées vélo |
+| Itinéraires balisés | [Waymarked Trails](https://waymarkedtrails.org/) | calques vélo et randonnée, © Sarah Hoffmann (CC-BY-SA) |
+| Traces GPS | [traces publiques OSM](https://www.openstreetmap.org/traces) | calque `gps.tile.openstreetmap.org` |
 | Adresses | [Nominatim](https://nominatim.openstreetmap.org/) | recherche et géocodage inverse, saisie temporisée |
-| Routage | [OSRM FOSSGIS](https://routing.openstreetmap.de/) (`routed-bike` / `routed-foot`) | sans clé |
-| Routage de secours | [BRouter](https://brouter.de/) (`trekking` / `hiking-beta`) | si OSRM répond mal |
+| Routage | [BRouter](https://brouter.de/) (`trekking` / `hiking-beta`) | pondère les itinéraires cyclables balisés |
+| Routage de secours | [OSRM FOSSGIS](https://routing.openstreetmap.de/) (`routed-bike` / `routed-foot`) | si BRouter répond mal |
 | Altitudes | [Open-Meteo Elevation](https://open-meteo.com/en/docs/elevation-api) | D+ et profil, best-effort |
 
 Ces serveurs sont mis à disposition gratuitement par la communauté : l'usage
@@ -94,7 +131,8 @@ css/styles.css        styles (thème clair/sombre, responsive)
 js/app.js             carte Leaflet, formulaire, orchestration
 js/planner.js         génération et calibration des parcours
 js/simplify.js        suppression des impasses parcourues aller-retour
-js/routing.js         appels OSRM + repli BRouter
+js/routing.js         appels BRouter (+ profil balisé) et repli OSRM
+js/layers.js          fonds de carte et calques d'itinéraires balisés
 js/geocoding.js       recherche d'adresse (Nominatim)
 js/places.js          lieux de départ enregistrés (localStorage)
 js/elevation.js       profil altimétrique et dénivelé
@@ -122,5 +160,7 @@ avec un routeur simulé — donc sans réseau ni navigateur.
 - Les lieux enregistrés vivent dans le navigateur (localStorage) : ils ne
   suivent pas d'un appareil à l'autre et disparaissent si tu effaces les données
   du site.
+- La popularité réelle (heatmap Strava, Komoot) n'est pas accessible : les
+  itinéraires balisés OSM en sont un substitut, pas un équivalent.
 - L'aller simple ne prévoit pas le retour — pense au train, à la voiture, ou
   choisis une boucle.
