@@ -5,7 +5,10 @@
 import { destination, distance, pathLength } from '../js/geo.js';
 import { removeOutAndBack } from '../js/simplify.js';
 import { planRoute } from '../js/planner.js';
-import { applyProfileParams, resolveProviders, signpostingApplies } from '../js/routing.js';
+import {
+  applyProfileParams, resolveProviders, signpostingApplies,
+  classifySurface, surfacesFromMessages,
+} from '../js/routing.js';
 import { buildShareUrl, parseShareParams } from '../js/share.js';
 
 let failures = 0;
@@ -134,6 +137,17 @@ function fakeRouter({ deadEnds = false } = {}) {
     const geometry = { coordinates: coords.map((p) => [p.lng, p.lat]) };
     const length = pathLength(coords) * 1.3;
 
+    // Première moitié goudronnée, seconde moitié en chemin.
+    const middle = coords[Math.floor(coords.length / 2)];
+    const last = coords.at(-1);
+    const messages = [
+      ['Longitude', 'Latitude', 'Elevation', 'Distance', 'WayTags'],
+      [String(Math.round(middle.lng * 1e6)), String(Math.round(middle.lat * 1e6)), '0', '0',
+       'highway=residential surface=asphalt'],
+      [String(Math.round(last.lng * 1e6)), String(Math.round(last.lat * 1e6)), '0', '0',
+       'highway=track surface=gravel'],
+    ];
+
     return {
       ok: true,
       json: async () =>
@@ -141,7 +155,7 @@ function fakeRouter({ deadEnds = false } = {}) {
           ? {
               features: [{
                 geometry,
-                properties: { 'track-length': String(length), 'total-time': '3600' },
+                properties: { 'track-length': String(length), 'total-time': '3600', messages },
               }],
             }
           : { code: 'Ok', routes: [{ distance: length, duration: 3600, geometry }] },
@@ -325,6 +339,69 @@ console.log('\nTerrain et profils BRouter (js/routing.js)');
   check('paramètres partiellement connus : on applique ce qui existe',
     /assign\s+consider_elevation\s+false/.test(
       applyProfileParams('assign consider_elevation true', { consider_elevation: false, absent: 1 })));
+}
+
+/* ------------------------------------------------------------ revêtement --- */
+
+console.log('\nRevêtement (js/routing.js)');
+
+{
+  const cases = [
+    ['highway=residential', 'paved'],
+    ['highway=tertiary surface=asphalt', 'paved'],
+    ['highway=cycleway surface=paving_stones', 'paved'],
+    ['highway=track', 'unpaved'],
+    ['highway=path surface=ground', 'unpaved'],
+    ['highway=track surface=asphalt', 'paved'],
+    ['highway=service tracktype=grade3', 'unpaved'],
+    ['highway=service tracktype=grade1', 'paved'],
+    ['', 'paved'],
+  ];
+  check('tags OSM correctement classés',
+    cases.every(([tags, expected]) => classifySurface(tags) === expected),
+    cases.map(([t, e]) => `${t || '(vide)'}→${e}`).slice(0, 3).join(', ') + '…');
+}
+
+{
+  const coords = Array.from({ length: 8 }, (_, i) => destination(home, 90, i * 100));
+  const at = (p) => [String(Math.round(p.lng * 1e6)), String(Math.round(p.lat * 1e6))];
+  const messages = [
+    ['Longitude', 'Latitude', 'WayTags'],
+    [...at(coords[3]), 'highway=residential'],
+    [...at(coords[6]), 'highway=track'],
+  ];
+
+  const surfaces = surfacesFromMessages(messages, coords);
+  check('revêtement aligné sur les points du tracé',
+    surfaces.length === coords.length &&
+    surfaces.slice(0, 4).every((s) => s === 'paved') &&
+    surfaces.slice(4, 8).every((s) => s === 'unpaved'),
+    surfaces.join(','));
+
+  check('messages absents ou illisibles tolérés',
+    surfacesFromMessages(null, coords) === null &&
+    surfacesFromMessages([['Foo', 'Bar']], coords) === null);
+}
+
+{
+  // Le revêtement doit rester aligné après nettoyage des impasses et repli.
+  fakeRouter({ deadEnds: true });
+  const trimmed = await planRoute({
+    start: home, targetDistance: 20000, sport: 'bike', shape: 'loop', bearing: 60, seed: 99,
+  });
+  check('revêtement toujours aligné après nettoyage',
+    trimmed.surfaces?.length === trimmed.coords.length &&
+    trimmed.surfaces.includes('unpaved'),
+    `${trimmed.coords.length} points`);
+
+  fakeRouter();
+  const out = await planRoute({
+    start: home, targetDistance: 12000, sport: 'bike', shape: 'outback', bearing: 30, seed: 5,
+  });
+  const n = out.surfaces.length;
+  check('revêtement replié comme la trace',
+    n === out.coords.length && [1, 7, 25].every((k) => out.surfaces[k] === out.surfaces[n - 1 - k]),
+    `${n} points`);
 }
 
 /* ------------------------------------------------------- lien de partage --- */

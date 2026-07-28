@@ -1,6 +1,6 @@
 // Orchestration : carte, formulaire, génération du parcours et export GPX.
 
-import { cumulativeDistances } from './geo.js';
+import { cumulativeDistances, pathLength } from './geo.js';
 import { planRoute } from './planner.js';
 import { fetchElevationProfile, interpolateElevations } from './elevation.js';
 import { buildGpx, downloadGpx, gpxFilename } from './gpx.js';
@@ -12,7 +12,7 @@ import { buildShareUrl, parseShareParams } from './share.js';
 
 // Affichée en pied de panneau : permet de savoir d'un coup d'œil quelle
 // version le navigateur exécute réellement (cache, déploiement en retard…).
-const VERSION = '0.5 — terrain, aller-retour, partage';
+const VERSION = '0.6 — revêtement route / chemin';
 
 const STORAGE_KEY = 'findmyway.settings.v1';
 const DEFAULT_SPEED = { bike: 25, run: 10 };
@@ -104,6 +104,7 @@ function cacheDom() {
   const ids = [
     'map-wrap', 'btn-add-via', 'btn-clear-vias', 'via-list', 'via-count', 'via-hint',
     'seg-terrain', 'terrain-hint', 'btn-share', 'provider', 'share-row', 'share-url', 'version',
+    'surface-legend',
     'input-signposted', 'signposted-row', 'signposted-hint',
     'input-address', 'address-results', 'btn-save-place', 'save-row', 'input-place-name',
     'btn-save-confirm', 'btn-save-cancel', 'places-row', 'select-place', 'btn-delete-place',
@@ -183,16 +184,31 @@ function updateStartDisplay() {
   syncPlaceSelection();
 }
 
-function drawRoute(coords, shape, turnaround) {
+function drawRoute(coords, shape, turnaround, surfaces) {
   if (routeLine) routeLine.remove();
   const latlngs = coords.map((p) => [p.lat, p.lng]);
 
-  routeLine = L.polyline(latlngs, {
+  // Trait plein orange pour tout le parcours, puis pointillés blancs par-dessus
+  // les portions non revêtues : les chemins se lisent sans rompre la continuité.
+  routeLine = L.layerGroup().addTo(map);
+  const base = L.polyline(latlngs, {
     color: getComputedStyle(document.body).getPropertyValue('--track').trim() || '#f4511e',
     weight: 5,
     opacity: 0.9,
     lineJoin: 'round',
-  }).addTo(map);
+  }).addTo(routeLine);
+
+  for (const run of unpavedRuns(surfaces)) {
+    L.polyline(latlngs.slice(run.from, run.to + 1), {
+      color: '#ffffff',
+      weight: 3,
+      opacity: 0.95,
+      dashArray: '1 7',
+      lineCap: 'round',
+      lineJoin: 'round',
+      interactive: false,
+    }).addTo(routeLine);
+  }
 
   if (endMarker) {
     endMarker.remove();
@@ -207,7 +223,42 @@ function drawRoute(coords, shape, turnaround) {
   }
 
   startMarker.setZIndexOffset(1000);
-  map.fitBounds(routeLine.getBounds(), { padding: [40, 40] });
+  map.fitBounds(base.getBounds(), { padding: [40, 40] });
+}
+
+/** Portions contiguës non revêtues, sous forme d'intervalles d'indices. */
+function unpavedRuns(surfaces) {
+  if (!surfaces) return [];
+
+  const runs = [];
+  let from = null;
+
+  for (let i = 0; i < surfaces.length; i++) {
+    if (surfaces[i] === 'unpaved') {
+      from ??= Math.max(0, i - 1); // rejoindre le point précédent, sinon un trou
+    } else if (from !== null) {
+      runs.push({ from, to: i });
+      from = null;
+    }
+  }
+  if (from !== null) runs.push({ from, to: surfaces.length - 1 });
+
+  return runs;
+}
+
+/** Part de chemin dans le parcours, en mètres et en pourcentage. */
+function unpavedShare(coords, surfaces) {
+  if (!surfaces) return null;
+
+  let unpaved = 0;
+  let total = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const span = pathLength([coords[i - 1], coords[i]]);
+    total += span;
+    if (surfaces[i] === 'unpaved') unpaved += span;
+  }
+
+  return total > 0 ? { meters: unpaved, ratio: unpaved / total } : null;
 }
 
 /* ------------------------------------------------------ points de passage --- */
@@ -681,7 +732,7 @@ async function generate({ newVariant }) {
     });
 
     state.route = result;
-    drawRoute(result.coords, state.shape, result.turnaround);
+    drawRoute(result.coords, state.shape, result.turnaround, result.surfaces);
     const summary = showResult(result, targetDistance);
 
     setStatus('Récupération du profil altimétrique…');
@@ -710,6 +761,15 @@ function showResult(result, targetDistance) {
 
   const tuned = result.tuned ? ' réglé' : '';
   el.provider.textContent = `tracé par ${result.provider} · profil ${result.profile}${tuned}`;
+
+  const share = unpavedShare(result.coords, result.surfaces);
+  el.surfaceLegend.classList.toggle('is-hidden', !share);
+  if (share) {
+    const paths = Math.round(share.ratio * 100);
+    el.surfaceLegend.innerHTML =
+      `<span class="legend__road"></span>${100 - paths} % route ·` +
+      `<span class="legend__path"></span>${paths} % chemins`;
+  }
 
   // Les points de passage imposent un plancher : le dire plutôt que parler d'écart.
   if (result.minimal) {

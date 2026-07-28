@@ -121,6 +121,23 @@ le destinataire retrouve le tracé exact, pas seulement les mêmes réglages. À
 l'ouverture d'un tel lien, le parcours est retracé automatiquement. Le nom du
 lieu de départ n'est volontairement pas partagé.
 
+### Route ou chemin, à la lecture du tracé
+
+BRouter joint à chaque itinéraire un tableau `messages` : une ligne par tronçon,
+avec les tags OSM de la voie empruntée. `js/routing.js` s'en sert pour étiqueter
+chaque point du tracé, à partir de `surface`, `tracktype` et `highway` — une
+voie sans tag de surface est supposée goudronnée, ce qui est la règle en Europe
+pour une route nommée.
+
+La carte affiche alors un trait plein orange sur toute la longueur, avec des
+**pointillés blancs par-dessus les portions non revêtues** : les chemins se
+repèrent d'un coup d'œil sans que le tracé perde sa continuité. Une légende sous
+les statistiques donne la répartition (« 68 % route · 32 % chemins »).
+
+Le repli OSRM ne fournit pas cette information : dans ce cas le tracé reste
+uniformément orange et la légende disparaît, plutôt que d'afficher une
+répartition inventée.
+
 ### Pas d'impasses ni de demi-tours
 
 Un point de passage se cale parfois sur une voie sans issue : le routeur y

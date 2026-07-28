@@ -21,12 +21,13 @@ const MIN_ANGLE = 120; // ° : au-delà, les deux brins sont bien en sens invers
 
 /**
  * @param {{lat:number,lng:number}[]} coords
- * @returns {{coords: {lat:number,lng:number}[], removed: number}} tracé nettoyé
- *          et longueur (m) des allers-retours supprimés
+ * @returns {{coords: {lat:number,lng:number}[], removed: number, keep: boolean[] | null}}
+ *          tracé nettoyé, longueur (m) des allers-retours supprimés, et masque
+ *          des points conservés (pour filtrer les données parallèles)
  */
 export function removeOutAndBack(coords, { tolerance = TOLERANCE, minSpur = MIN_SPUR } = {}) {
   const n = coords.length;
-  if (n < 5) return { coords, removed: 0 };
+  if (n < 5) return { coords, removed: 0, keep: null };
 
   const keep = new Array(n).fill(true);
   let removed = 0;
@@ -48,8 +49,8 @@ export function removeOutAndBack(coords, { tolerance = TOLERANCE, minSpur = MIN_
     i++;
   }
 
-  if (removed === 0) return { coords, removed: 0 };
-  return { coords: coords.filter((_, idx) => keep[idx]), removed };
+  if (removed === 0) return { coords, removed: 0, keep: null };
+  return { coords: coords.filter((_, idx) => keep[idx]), removed, keep };
 }
 
 /**

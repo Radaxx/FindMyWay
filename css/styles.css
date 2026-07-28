@@ -562,6 +562,39 @@ select:focus {
   color: var(--muted);
 }
 
+/* Légende des revêtements */
+
+.legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.legend.is-hidden { display: none; }
+
+.legend__road,
+.legend__path {
+  display: inline-block;
+  width: 22px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--track);
+}
+
+.legend__road { margin-left: 2px; }
+
+.legend__path {
+  margin-left: 10px;
+  background-image: repeating-linear-gradient(
+    to right, #fff 0 2px, transparent 2px 6px
+  );
+  background-color: var(--track);
+  border: 1px solid var(--border);
+}
+
 .profile { margin-bottom: 12px; }
 
 .profile svg {

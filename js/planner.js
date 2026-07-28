@@ -49,9 +49,14 @@ function planLeg(opts) {
  */
 function mirror(leg) {
   const back = leg.coords.slice(0, -1).reverse();
+  const surfaces = leg.surfaces
+    ? [...leg.surfaces, ...leg.surfaces.slice(0, -1).reverse()]
+    : null;
+
   return {
     ...leg,
     coords: [...leg.coords, ...back],
+    surfaces,
     distance: leg.distance * 2,
     duration: leg.duration * 2,
     turnaround: leg.coords.at(-1),
@@ -240,7 +245,7 @@ async function refine(opts, { build, initialScale, initialBest, adjust, maxItera
  * annoncée au prorata de la trace conservée.
  */
 function trimSpurs(result) {
-  const { coords, removed } = removeOutAndBack(result.coords);
+  const { coords, removed, keep } = removeOutAndBack(result.coords);
   if (!removed) return result;
 
   const before = pathLength(result.coords);
@@ -249,6 +254,8 @@ function trimSpurs(result) {
   return {
     ...result,
     coords,
+    // Les revêtements sont indexés comme les points : même filtrage.
+    surfaces: result.surfaces ? result.surfaces.filter((_, i) => keep[i]) : null,
     distance: result.distance * ratio,
     duration: result.duration * ratio,
     trimmed: removed,

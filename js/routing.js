@@ -113,14 +113,104 @@ async function routeBrouter(points, step, signal) {
   }
 
   const props = feature.properties || {};
+  const coords = feature.geometry.coordinates.map(([lng, lat]) => ({ lat, lng }));
+
   return {
-    coords: feature.geometry.coordinates.map(([lng, lat]) => ({ lat, lng })),
+    coords,
+    surfaces: surfacesFromMessages(props.messages, coords),
     distance: Number(props['track-length']) || 0,
     duration: Number(props['total-time']) || 0,
     provider: 'BRouter',
     profile: step.profile,
     tuned: Boolean(tuned),
   };
+}
+
+/* ------------------------------------------------------------ revêtement --- */
+
+// Revêtements explicitement durs / meubles, d'après le tag `surface` d'OSM.
+const PAVED_SURFACE = /^(asphalt|concrete|concrete:.*|paved|paving_stones|sett|cobblestone|metal|wood|chipseal)$/;
+const UNPAVED_SURFACE = /^(unpaved|gravel|fine_gravel|compacted|ground|dirt|earth|grass|grass_paver|sand|mud|pebblestone|woodchips|rock|stones?)$/;
+// Voies présumées non revêtues en l'absence de tag `surface`.
+const UNPAVED_HIGHWAY = /^(track|path|bridleway)$/;
+
+/**
+ * Classe chaque point du tracé en « route » ou « chemin ».
+ *
+ * BRouter joint à sa réponse un tableau `messages` : une ligne par tronçon,
+ * avec les tags OSM de la voie empruntée et la position de sa fin. On parcourt
+ * la trace en même temps que ces messages pour étiqueter chaque point.
+ *
+ * @returns {('paved'|'unpaved')[] | null} null si l'information manque
+ */
+export function surfacesFromMessages(messages, coords) {
+  if (!Array.isArray(messages) || messages.length < 2 || !coords.length) return null;
+
+  const header = messages[0].map((h) => String(h).trim());
+  const lngAt = header.indexOf('Longitude');
+  const latAt = header.indexOf('Latitude');
+  const tagsAt = header.indexOf('WayTags');
+  if (lngAt < 0 || latAt < 0 || tagsAt < 0) return null;
+
+  const surfaces = new Array(coords.length).fill('paved');
+  let cursor = 0;
+
+  for (let row = 1; row < messages.length; row++) {
+    const message = messages[row];
+    const end = { lat: toDegrees(message[latAt]), lng: toDegrees(message[lngAt]) };
+    if (!Number.isFinite(end.lat) || !Number.isFinite(end.lng)) continue;
+
+    const kind = classifySurface(message[tagsAt]);
+    const endIndex = indexOfPoint(coords, end, cursor);
+
+    // Convention : un point porte le revêtement du segment qui y arrive, donc
+    // le point de jonction reste rattaché à la voie précédente.
+    for (let i = cursor === 0 ? 0 : cursor + 1; i <= endIndex; i++) surfaces[i] = kind;
+    cursor = endIndex;
+  }
+
+  for (let i = cursor + 1; i < coords.length; i++) surfaces[i] = surfaces[cursor];
+  return surfaces;
+}
+
+/** BRouter exprime ses coordonnées en microdegrés dans les messages. */
+function toDegrees(value) {
+  const n = Number(value);
+  return Math.abs(n) > 180 ? n / 1e6 : n;
+}
+
+/** Premier point de la trace correspondant à `target`, à partir de `from`. */
+function indexOfPoint(coords, target, from) {
+  let best = from;
+  let bestGap = Infinity;
+
+  for (let i = from; i < coords.length; i++) {
+    const gap = Math.abs(coords[i].lat - target.lat) + Math.abs(coords[i].lng - target.lng);
+    if (gap < bestGap) {
+      bestGap = gap;
+      best = i;
+      if (gap < 1e-6) break; // le point du message est un point de la trace
+    }
+  }
+  return best;
+}
+
+/** @param {string} wayTags  ex. « highway=track surface=gravel tracktype=grade3 » */
+export function classifySurface(wayTags) {
+  const tags = {};
+  for (const pair of String(wayTags || '').trim().split(/\s+/)) {
+    const at = pair.indexOf('=');
+    if (at > 0) tags[pair.slice(0, at)] = pair.slice(at + 1);
+  }
+
+  if (tags.surface) {
+    if (UNPAVED_SURFACE.test(tags.surface)) return 'unpaved';
+    if (PAVED_SURFACE.test(tags.surface)) return 'paved';
+  }
+  if (tags.tracktype && tags.tracktype !== 'grade1') return 'unpaved';
+  if (UNPAVED_HIGHWAY.test(tags.highway || '')) return 'unpaved';
+
+  return 'paved'; // en Europe, une voie nommée sans tag de surface est goudronnée
 }
 
 async function routeOsrm(points, sport, signal) {
