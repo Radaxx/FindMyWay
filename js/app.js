@@ -12,7 +12,7 @@ import { buildShareUrl, parseShareParams } from './share.js';
 
 // Affichée en pied de panneau : permet de savoir d'un coup d'œil quelle
 // version le navigateur exécute réellement (cache, déploiement en retard…).
-const VERSION = '0.6.1 — revêtement route / chemin';
+const VERSION = '0.7 — point d’arrivée';
 
 const STORAGE_KEY = 'findmyway.settings.v1';
 const DEFAULT_SPEED = { bike: 25, run: 10 };
@@ -28,7 +28,9 @@ const state = {
   goal: 'distance',
   bearing: null, // cap retenu pour le tracé courant
   vias: [], // points de passage imposés par l'utilisateur
+  finish: null, // arrivée imposée (hors boucle)
   addingVia: false,
+  pickingFinish: false,
   signposted: true, // privilégier les itinéraires balisés
   variant: 0,
   seed: null, // graine du tracé courant (partagée dans le lien)
@@ -41,6 +43,7 @@ const el = {};
 let map;
 let layers;
 let viaMarkers = [];
+let finishMarker;
 let startMarker;
 let endMarker;
 let routeLine;
@@ -56,6 +59,7 @@ function init() {
   bindEvents();
   refreshPlaces();
   refreshVias();
+  refreshFinish();
   updateSignposted();
   updateGoalHint();
   el.version.textContent = `v${VERSION}`;
@@ -77,6 +81,7 @@ function applyShared(shared) {
     state.startLabel = null;
   }
   if (shared.vias) state.vias = shared.vias;
+  if (shared.finish) state.finish = shared.finish;
   if (typeof shared.signposted === 'boolean') state.signposted = shared.signposted;
 
   if (shared.distance) el.inputDistance.value = shared.distance;
@@ -104,7 +109,7 @@ function cacheDom() {
   const ids = [
     'map-wrap', 'btn-add-via', 'btn-clear-vias', 'via-list', 'via-count', 'via-hint',
     'seg-terrain', 'terrain-hint', 'btn-share', 'provider', 'share-row', 'share-url', 'version',
-    'surface-legend',
+    'surface-legend', 'finish-row', 'btn-set-finish', 'btn-clear-finish', 'finish-hint',
     'input-signposted', 'signposted-row', 'signposted-hint',
     'input-address', 'address-results', 'btn-save-place', 'save-row', 'input-place-name',
     'btn-save-confirm', 'btn-save-cancel', 'places-row', 'select-place', 'btn-delete-place',
@@ -130,7 +135,8 @@ function initMap() {
 
   map.on('click', (e) => {
     const point = { lat: e.latlng.lat, lng: e.latlng.lng };
-    if (state.addingVia) addVia(point);
+    if (state.pickingFinish) setFinish(point);
+    else if (state.addingVia) addVia(point);
     else setStart(point);
   });
 
@@ -220,7 +226,7 @@ function drawRoute(coords, shape, turnaround, surfaces) {
     endMarker = null;
   }
   const endPoint = shape === 'outback' ? turnaround : coords[coords.length - 1];
-  if (endPoint && shape !== 'loop') {
+  if (endPoint && shape !== 'loop' && !state.finish) {
     endMarker = L.marker([endPoint.lat, endPoint.lng], {
       icon: pinIcon(shape === 'outback' ? '½' : 'A', 'marker-pin--end'),
       title: shape === 'outback' ? 'Demi-tour' : "Point d'arrivée",
@@ -285,6 +291,7 @@ function bindVias() {
 
 function setAddingVia(active) {
   state.addingVia = active;
+  if (active && state.pickingFinish) setPickingFinish(false);
   el.btnAddVia.classList.toggle('is-active', active);
   el.btnAddVia.textContent = active ? '✓ Terminer' : '📌 Ajouter un point';
   el.mapWrap.classList.toggle('is-adding', active);
@@ -350,6 +357,77 @@ function refreshVias() {
     ? "L'itinéraire passera par ces points, dans l'ordre."
     : "Facultatif : l'itinéraire passera par ces points.";
 }
+
+/* -------------------------------------------------------------- arrivée --- */
+
+function bindFinish() {
+  el.btnSetFinish.addEventListener('click', () => setPickingFinish(!state.pickingFinish));
+  el.btnClearFinish.addEventListener('click', () => {
+    state.finish = null;
+    setPickingFinish(false);
+    refreshFinish();
+    saveSettings();
+  });
+}
+
+function setPickingFinish(active) {
+  state.pickingFinish = active;
+  if (active) setAddingVia(false); // un seul mode de saisie à la fois
+
+  el.btnSetFinish.classList.toggle('is-active', active);
+  el.mapWrap.classList.toggle('is-adding', active || state.addingVia);
+  el.btnSetFinish.textContent = active
+    ? '✓ Terminer'
+    : state.finish
+      ? '🏁 Déplacer l’arrivée'
+      : "🏁 Définir l'arrivée";
+  if (active) setStatus("Clique sur la carte pour placer l'arrivée.");
+}
+
+function setFinish(point) {
+  state.finish = point;
+  setPickingFinish(false);
+  refreshFinish();
+  saveSettings();
+  setStatus('');
+}
+
+/** Marqueur, boutons et explication de l'arrivée imposée. */
+function refreshFinish() {
+  const usable = state.shape !== 'loop';
+
+  finishMarker?.remove();
+  finishMarker = null;
+
+  if (state.finish && usable) {
+    finishMarker = L.marker([state.finish.lat, state.finish.lng], {
+      icon: pinIcon('A', 'marker-pin--end'),
+      draggable: true,
+      title: 'Arrivée (déplaçable)',
+    }).addTo(map);
+    finishMarker.on('dragend', () => {
+      const p = finishMarker.getLatLng();
+      state.finish = { lat: p.lat, lng: p.lng };
+      refreshFinish();
+      saveSettings();
+    });
+  }
+
+  el.btnSetFinish.disabled = !usable;
+  el.btnClearFinish.disabled = !state.finish || !usable;
+  el.finishRow.classList.toggle('is-disabled', !usable);
+  setPickingFinish(state.pickingFinish && usable); // met le libellé à jour
+
+  el.finishHint.textContent = !usable
+    ? 'Une boucle revient toujours au départ.'
+    : state.finish
+      ? `Arrivée : ${state.finish.lat.toFixed(4)}, ${state.finish.lng.toFixed(4)} —` +
+        ' la distance sert alors à dessiner le détour pour y arriver.'
+      : state.shape === 'outback'
+        ? 'Facultatif : point de demi-tour imposé.'
+        : "Facultatif : sinon l'arrivée est calculée selon la distance et la direction.";
+}
+
 
 const TERRAIN_HINT = {
   bike: {
@@ -573,6 +651,7 @@ function syncPlaceSelection() {
 function bindEvents() {
   bindPlaces();
   bindVias();
+  bindFinish();
 
   bindSegmented(el.segSport, (value) => {
     state.sport = value;
@@ -590,6 +669,7 @@ function bindEvents() {
 
   bindSegmented(el.segShape, (value) => {
     state.shape = value;
+    refreshFinish();
     saveSettings();
   });
 
@@ -729,6 +809,7 @@ async function generate({ newVariant }) {
       shape: state.shape,
       bearing: state.bearing,
       vias: state.vias,
+      end: state.finish,
       terrain: state.terrain,
       preferSignposted: state.signposted && signpostingApplies(state.sport, state.terrain),
       seed: state.seed,
@@ -778,7 +859,7 @@ function showResult(result, targetDistance) {
 
   // Les points de passage imposent un plancher : le dire plutôt que parler d'écart.
   if (result.minimal) {
-    return `Tes points de passage imposent déjà ${(result.distance / 1000).toFixed(1)} km,` +
+    return `Le tracé imposé fait déjà ${(result.distance / 1000).toFixed(1)} km,` +
       " soit plus que l'objectif.";
   }
 
@@ -834,6 +915,7 @@ async function shareLink() {
   const url = buildShareUrl(location.href, {
     start: state.start,
     vias: state.vias,
+    finish: state.finish,
     sport: state.sport,
     shape: state.shape,
     terrain: state.terrain,
@@ -911,6 +993,7 @@ function saveSettings() {
         start: state.start,
         startLabel: state.startLabel,
         vias: state.vias,
+        finish: state.finish,
         signposted: state.signposted,
         terrain: state.terrain,
         sport: state.sport,
@@ -943,6 +1026,7 @@ function restoreSettings() {
   if (Array.isArray(saved.vias)) {
     state.vias = saved.vias.filter((p) => Number.isFinite(p?.lat) && Number.isFinite(p?.lng));
   }
+  if (Number.isFinite(saved.finish?.lat)) state.finish = saved.finish;
   if (typeof saved.signposted === 'boolean') state.signposted = saved.signposted;
   if (saved.distance) el.inputDistance.value = saved.distance;
   if (saved.time) el.inputTime.value = saved.time;

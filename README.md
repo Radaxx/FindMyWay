@@ -40,7 +40,11 @@ GitHub Pages, Netlify, un dossier `public/` de n'importe quel hébergeur, etc.
    aller simple.
 5. **Objectif** : une distance en km, ou une durée en minutes convertie en
    distance via la vitesse moyenne indiquée (25 km/h à vélo, 10 km/h en course
-   par défaut).
+   par défaut). Le bouton 🏁 permet aussi de **fixer l'arrivée** sur la carte —
+   point d'arrivée pour un aller simple, point de demi-tour pour un
+   aller-retour. La distance devient alors la longueur du détour pour s'y
+   rendre. Sans arrivée imposée, elle est calculée d'après la distance et la
+   direction.
 6. **Direction générale** : imposée (N, NE, E…) ou aléatoire.
 7. **Tracer l'itinéraire**, puis **Autre variante** autant de fois que voulu
    pour obtenir un autre parcours avec les mêmes contraintes.
@@ -70,14 +74,16 @@ d'ici ». La calibration se fait donc par itérations (`js/planner.js`) :
   plus un point intermédiaire décalé latéralement.
 - **Aller-retour** : un aller calibré sur la moitié de la cible, puis replié sur
   lui-même. Aucune requête supplémentaire, et le retour suit exactement l'aller.
-- **Avec points de passage imposés** : le tracé qui les relie devient le
-  plancher — impossible de faire plus court. S'il reste de la distance à
+- **Avec points imposés** (passages et/ou arrivée) : le tracé qui les relie
+  devient le plancher — impossible de faire plus court. S'il reste de la distance à
   couvrir, chaque portion est gonflée latéralement, alternativement d'un côté
   puis de l'autre (sinon une boucle à un seul point de passage serait un simple
   aller-retour). Le facteur de renflement est estimé analytiquement — une
   portion gonflée d'un facteur `f` s'allonge d'environ `√(1 + 4f²)` — puis
   affiné sur la distance réellement mesurée. Si les points imposent déjà plus
-  que l'objectif, l'application le dit au lieu de tricher.
+  que l'objectif, l'application le dit au lieu de tricher. Une arrivée choisie
+  sur la carte n'est qu'un point imposé de plus, placé en dernier — d'où le même
+  traitement, sans code particulier.
 
 L'ajustement est amorti pour éviter les oscillations et s'arrête dès que l'écart
 passe sous 4 % (7 essais au maximum, en pratique 2 ou 3). Le meilleur tracé

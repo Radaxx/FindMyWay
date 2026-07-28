@@ -341,6 +341,55 @@ console.log('\nTerrain et profils BRouter (js/routing.js)');
       applyProfileParams('assign consider_elevation true', { consider_elevation: false, absent: 1 })));
 }
 
+/* -------------------------------------------------------- arrivée imposée --- */
+
+console.log('\nArrivée imposée (js/planner.js)');
+
+fakeRouter();
+{
+  const end = destination(home, 90, 8000);
+
+  for (const [shape, km] of [['oneway', 15], ['oneway', 30], ['outback', 30]]) {
+    const res = await planRoute({
+      start: home, end, targetDistance: km * 1000, sport: 'bike', shape, bearing: 90, seed: 3,
+    });
+    const arrival = shape === 'outback' ? res.turnaround : res.coords.at(-1);
+    const errPct = ((res.distance - km * 1000) / (km * 1000)) * 100;
+    const closed = shape !== 'outback' || distance(res.coords[0], res.coords.at(-1)) < 50;
+
+    check(`${shape} ${km} km : arrive au point choisi, à ±4 %`,
+      distance(arrival, end) < 50 && Math.abs(errPct) <= 4 && closed,
+      `${(res.distance / 1000).toFixed(2)} km, arrivée à ${Math.round(distance(arrival, end))} m`);
+  }
+
+  // Objectif plus court que le trajet direct : on annonce le plancher.
+  const short = await planRoute({
+    start: home, end, targetDistance: 5000, sport: 'bike', shape: 'oneway', bearing: 90, seed: 3,
+  });
+  check('objectif intenable signalé, arrivée respectée',
+    short.minimal === true && distance(short.coords.at(-1), end) < 50,
+    `plancher ${(short.distance / 1000).toFixed(1)} km`);
+
+  // Avec des points de passage : l'ordre départ → passages → arrivée est tenu.
+  const vias = [destination(home, 45, 3000)];
+  const both = await planRoute({
+    start: home, vias, end, targetDistance: 25000, sport: 'bike', shape: 'oneway', bearing: 90, seed: 4,
+  });
+  const nearest = (p) => both.coords.reduce(
+    (best, q, i) => (distance(q, p) < distance(both.coords[best], p) ? i : best), 0);
+  check('points de passage puis arrivée, dans l’ordre',
+    nearest(vias[0]) < nearest(end) && distance(both.coords.at(-1), end) < 50 &&
+    Math.abs((both.distance - 25000) / 25000) <= 0.05,
+    `${(both.distance / 1000).toFixed(2)} km`);
+
+  // Une boucle revient au départ : l'arrivée est ignorée.
+  const loop = await planRoute({
+    start: home, end, targetDistance: 20000, sport: 'bike', shape: 'loop', bearing: 90, seed: 5,
+  });
+  check('boucle : arrivée ignorée, retour au départ',
+    distance(loop.coords.at(-1), home) < 50);
+}
+
 /* ------------------------------------------------------------ revêtement --- */
 
 console.log('\nRevêtement (js/routing.js)');
@@ -410,7 +459,8 @@ console.log('\nLien de partage (js/share.js)');
 
 {
   const shared = {
-    start: home, vias: [destination(home, 90, 1500)], sport: 'run', shape: 'outback',
+    start: home, vias: [destination(home, 90, 1500)], finish: destination(home, 180, 4000),
+    sport: 'run', shape: 'outback',
     terrain: 'trail', goal: 'time', distance: 30, time: 45, speed: 11,
     direction: 'auto', signposted: true, bearing: 137.5, seed: 4242,
   };
@@ -419,6 +469,7 @@ console.log('\nLien de partage (js/share.js)');
 
   check('aller-retour du lien complet',
     Math.abs(back.start.lat - home.lat) < 1e-5 && back.vias.length === 1 &&
+    Math.abs(back.finish.lat - shared.finish.lat) < 1e-5 &&
     back.sport === 'run' && back.shape === 'outback' && back.terrain === 'trail' &&
     back.goal === 'time' && back.time === 45 && back.speed === 11 &&
     back.direction === 'auto' && back.signposted === true &&

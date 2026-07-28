@@ -24,6 +24,7 @@ const MAX_ITERATIONS = 7;
  * @param {number} opts.bearing             cap général en degrés
  * @param {number} opts.seed                graine pour varier les tracés
  * @param {{lat:number,lng:number}[]} [opts.vias]  points de passage imposés
+ * @param {{lat:number,lng:number}} [opts.end]      arrivée imposée (hors boucle)
  * @param {boolean} [opts.preferSignposted] privilégier les itinéraires balisés
  * @param {(msg: string) => void} [opts.onProgress]
  * @param {AbortSignal} [opts.signal]
@@ -38,7 +39,8 @@ export async function planRoute(opts) {
 }
 
 function planLeg(opts) {
-  if (opts.vias?.length) return planWithVias(opts);
+  const fixedFinish = opts.shape !== 'loop' && opts.end;
+  if (opts.vias?.length || fixedFinish) return planWithFixedPoints(opts);
   return opts.shape === 'loop' ? planLoop(opts) : planOneWay(opts);
 }
 
@@ -96,19 +98,27 @@ async function planOneWay(opts) {
 }
 
 /**
- * Parcours contraint par des points de passage imposés.
+ * Parcours contraint par des points imposés : points de passage, et/ou une
+ * arrivée choisie sur la carte.
  *
  * On mesure d'abord le tracé qui les relie : c'est le plancher, personne ne peut
  * faire plus court. S'il reste de la distance à couvrir, chaque portion est
  * gonflée latéralement (alternativement d'un côté puis de l'autre, pour dessiner
  * une vraie boucle plutôt qu'un aller-retour) jusqu'à la cible.
+ *
+ * Sans arrivée imposée, un aller simple garde son fonctionnement d'origine :
+ * c'est l'éloignement du point d'arrivée qui sert de variable d'ajustement.
  */
-async function planWithVias(opts) {
-  const { start, vias, targetDistance, shape, bearing, seed, onProgress } = opts;
+async function planWithFixedPoints(opts) {
+  const { start, targetDistance, shape, bearing, seed, onProgress } = opts;
+  const vias = opts.vias ?? [];
   const rng = seededRandom(seed);
   const sense = rng() < 0.5 ? 1 : -1;
 
-  const mandatory = shape === 'loop' ? [...vias, start] : [...vias];
+  // La boucle se referme sur le départ ; sinon on s'arrête à l'arrivée choisie,
+  // ou bien à un point que la calibration détermine.
+  const finish = shape === 'loop' ? start : opts.end ?? null;
+  const mandatory = finish ? [...vias, finish] : [...vias];
   const chain = [start, ...mandatory];
 
   onProgress?.('Tracé imposé par les points de passage…');
@@ -123,17 +133,15 @@ async function planWithVias(opts) {
     return { ...baseline, error: relativeError(baseline.distance), minimal: true };
   }
 
-  const build =
-    shape === 'loop'
-      ? (bulge) => bulgedWaypoints(chain, bulge, sense)
-      : (crow) => [...vias, destination(vias.at(-1), bearing, Math.max(50, crow))];
+  const build = finish
+    ? (bulge) => bulgedWaypoints(chain, bulge, sense)
+    : (crow) => [...vias, destination(vias.at(-1), bearing, Math.max(50, crow))];
 
   // Un renflement de facteur f rallonge une portion d'environ sqrt(1 + 4f²) :
   // on part de la valeur qui vise directement la cible.
-  const initialScale =
-    shape === 'loop'
-      ? Math.sqrt(Math.max(0, (targetDistance / baseline.distance) ** 2 - 1)) / 2
-      : (targetDistance - baseline.distance) * 0.78;
+  const initialScale = finish
+    ? Math.sqrt(Math.max(0, (targetDistance / baseline.distance) ** 2 - 1)) / 2
+    : (targetDistance - baseline.distance) * 0.78;
 
   return refine(opts, {
     build,
