@@ -10,6 +10,10 @@ import { setupLayers } from './layers.js';
 import { signpostingApplies } from './routing.js';
 import { buildShareUrl, parseShareParams } from './share.js';
 
+// Affichée en pied de panneau : permet de savoir d'un coup d'œil quelle
+// version le navigateur exécute réellement (cache, déploiement en retard…).
+const VERSION = '0.5 — terrain, aller-retour, partage';
+
 const STORAGE_KEY = 'findmyway.settings.v1';
 const DEFAULT_SPEED = { bike: 25, run: 10 };
 const SPORT_LABEL = { bike: 'Vélo', run: 'Course à pied' };
@@ -54,6 +58,7 @@ function init() {
   refreshVias();
   updateSignposted();
   updateGoalHint();
+  el.version.textContent = `v${VERSION}`;
 
   // Un lien partagé contient tout pour retracer le parcours : on le fait.
   if (shared) generate({ newVariant: false });
@@ -98,7 +103,7 @@ function applyShared(shared) {
 function cacheDom() {
   const ids = [
     'map-wrap', 'btn-add-via', 'btn-clear-vias', 'via-list', 'via-count', 'via-hint',
-    'seg-terrain', 'terrain-hint', 'btn-share', 'provider',
+    'seg-terrain', 'terrain-hint', 'btn-share', 'provider', 'share-row', 'share-url', 'version',
     'input-signposted', 'signposted-row', 'signposted-hint',
     'input-address', 'address-results', 'btn-save-place', 'save-row', 'input-place-name',
     'btn-save-confirm', 'btn-save-cancel', 'places-row', 'select-place', 'btn-delete-place',
@@ -629,6 +634,7 @@ async function generate({ newVariant }) {
 
   setBusy(true);
   el.result.classList.add('is-hidden');
+  el.shareRow.classList.add('is-hidden');
 
   const chosen = el.selectDirection.value;
   if (newVariant) {
@@ -751,7 +757,14 @@ function renderElevation(profile) {
   el.profile.classList.remove('is-hidden');
 }
 
-/** Copie un lien reproduisant exactement le parcours affiché. */
+/**
+ * Copie un lien reproduisant exactement le parcours affiché.
+ *
+ * Le presse-papiers n'est pas toujours disponible (page en http://, permission
+ * refusée, navigateur intégré à une autre application). Dans ce cas on affiche
+ * le lien dans un champ sélectionné : il doit toujours se passer quelque chose
+ * de visible.
+ */
 async function shareLink() {
   const url = buildShareUrl(location.href, {
     start: state.start,
@@ -770,14 +783,23 @@ async function shareLink() {
   });
 
   history.replaceState(null, '', url);
+  el.shareUrl.value = url;
 
-  try {
-    await navigator.clipboard.writeText(url);
-    setStatus('Lien du parcours copié dans le presse-papiers.');
-  } catch {
-    // Presse-papiers refusé (contexte non sécurisé, permission) : on montre l'URL.
-    window.prompt('Copie ce lien pour partager le parcours :', url);
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(url);
+      el.shareRow.classList.add('is-hidden');
+      setStatus('Lien du parcours copié dans le presse-papiers.');
+      return;
+    } catch {
+      /* refusé : on bascule sur l'affichage du lien */
+    }
   }
+
+  el.shareRow.classList.remove('is-hidden');
+  el.shareUrl.focus();
+  el.shareUrl.select();
+  setStatus('Voici le lien du parcours — copie-le (Ctrl/Cmd + C).');
 }
 
 function exportGpx() {

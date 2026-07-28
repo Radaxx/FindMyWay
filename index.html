@@ -156,6 +156,9 @@
             <button type="button" class="btn btn--accent" id="btn-gpx">⬇ Exporter en GPX</button>
             <button type="button" class="btn btn--icon" id="btn-share" title="Copier le lien de partage">🔗</button>
           </div>
+          <div class="share-row is-hidden" id="share-row">
+            <input type="text" id="share-url" readonly aria-label="Lien de partage" />
+          </div>
           <p class="provider" id="provider"></p>
         </section>
       </div>
@@ -165,6 +168,7 @@
         adresses <a href="https://nominatim.openstreetmap.org/" target="_blank" rel="noopener">Nominatim</a> ·
         routage <a href="https://routing.openstreetmap.de/" target="_blank" rel="noopener">OSRM</a>/<a href="https://brouter.de/" target="_blank" rel="noopener">BRouter</a> ·
         altitudes <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>
+        <span class="version" id="version"></span>
       </footer>
     </aside>
 
