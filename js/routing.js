@@ -117,7 +117,7 @@ async function routeBrouter(points, step, signal) {
 
   return {
     coords,
-    surfaces: surfacesFromMessages(props.messages, coords),
+    surfaces: safeSurfaces(props.messages, coords),
     distance: Number(props['track-length']) || 0,
     duration: Number(props['total-time']) || 0,
     provider: 'BRouter',
@@ -135,6 +135,21 @@ const UNPAVED_SURFACE = /^(unpaved|gravel|fine_gravel|compacted|ground|dirt|eart
 const UNPAVED_HIGHWAY = /^(track|path|bridleway)$/;
 
 /**
+ * Le revêtement n'est qu'une information d'affichage : quelle que soit la
+ * surprise dans la réponse du routeur, elle ne doit jamais empêcher un
+ * itinéraire d'être calculé ni dessiné.
+ */
+function safeSurfaces(messages, coords) {
+  try {
+    const surfaces = surfacesFromMessages(messages, coords);
+    return surfaces?.length === coords.length ? surfaces : null;
+  } catch (err) {
+    console.warn('Revêtement illisible, tracé affiché sans distinction :', err);
+    return null;
+  }
+}
+
+/**
  * Classe chaque point du tracé en « route » ou « chemin ».
  *
  * BRouter joint à sa réponse un tableau `messages` : une ligne par tronçon,
@@ -145,6 +160,8 @@ const UNPAVED_HIGHWAY = /^(track|path|bridleway)$/;
  */
 export function surfacesFromMessages(messages, coords) {
   if (!Array.isArray(messages) || messages.length < 2 || !coords.length) return null;
+
+  if (!Array.isArray(messages[0])) return null; // en-tête attendu sous forme de colonnes
 
   const header = messages[0].map((h) => String(h).trim());
   const lngAt = header.indexOf('Longitude');
@@ -157,6 +174,8 @@ export function surfacesFromMessages(messages, coords) {
 
   for (let row = 1; row < messages.length; row++) {
     const message = messages[row];
+    if (!Array.isArray(message)) continue;
+
     const end = { lat: toDegrees(message[latAt]), lng: toDegrees(message[lngAt]) };
     if (!Number.isFinite(end.lat) || !Number.isFinite(end.lng)) continue;
 

@@ -12,7 +12,7 @@ import { buildShareUrl, parseShareParams } from './share.js';
 
 // Affichée en pied de panneau : permet de savoir d'un coup d'œil quelle
 // version le navigateur exécute réellement (cache, déploiement en retard…).
-const VERSION = '0.6 — revêtement route / chemin';
+const VERSION = '0.6.1 — revêtement route / chemin';
 
 const STORAGE_KEY = 'findmyway.settings.v1';
 const DEFAULT_SPEED = { bike: 25, run: 10 };
@@ -198,16 +198,21 @@ function drawRoute(coords, shape, turnaround, surfaces) {
     lineJoin: 'round',
   }).addTo(routeLine);
 
-  for (const run of unpavedRuns(surfaces)) {
-    L.polyline(latlngs.slice(run.from, run.to + 1), {
-      color: '#ffffff',
-      weight: 3,
-      opacity: 0.95,
-      dashArray: '1 7',
-      lineCap: 'round',
-      lineJoin: 'round',
-      interactive: false,
-    }).addTo(routeLine);
+  try {
+    for (const run of unpavedRuns(surfaces)) {
+      L.polyline(latlngs.slice(run.from, run.to + 1), {
+        color: '#ffffff',
+        weight: 3,
+        opacity: 0.95,
+        dashArray: '1 7',
+        lineCap: 'round',
+        lineJoin: 'round',
+        interactive: false,
+      }).addTo(routeLine);
+    }
+  } catch (err) {
+    // Décoratif : mieux vaut un tracé uniforme qu'un tracé absent.
+    console.warn('Revêtement non représenté :', err);
   }
 
   if (endMarker) {
