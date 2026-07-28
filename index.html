@@ -65,11 +65,18 @@
 
         <!-- 3. Activité -->
         <section class="field">
-          <label class="field__label">3. Activité</label>
+          <label class="field__label">3. Activité et terrain</label>
           <div class="segmented" id="seg-sport" role="radiogroup" aria-label="Activité">
             <button type="button" role="radio" data-value="bike" aria-checked="true" class="is-active">🚴 Vélo</button>
             <button type="button" role="radio" data-value="run" aria-checked="false">🏃 Course</button>
           </div>
+          <div class="segmented segmented--sm" id="seg-terrain" role="radiogroup" aria-label="Terrain">
+            <button type="button" role="radio" data-value="road" aria-checked="false">🛣️ Route</button>
+            <button type="button" role="radio" data-value="mixed" aria-checked="true" class="is-active">🌗 Mixte</button>
+            <button type="button" role="radio" data-value="trail" aria-checked="false">🌲 Chemins</button>
+          </div>
+          <p class="hint" id="terrain-hint"></p>
+
           <label class="check" id="signposted-row">
             <input type="checkbox" id="input-signposted" checked />
             <span>Privilégier les itinéraires balisés<span class="check__hint" id="signposted-hint"></span></span>
@@ -79,8 +86,9 @@
         <!-- 4. Type de parcours -->
         <section class="field">
           <label class="field__label">4. Type de parcours</label>
-          <div class="segmented" id="seg-shape" role="radiogroup" aria-label="Type de parcours">
+          <div class="segmented segmented--sm" id="seg-shape" role="radiogroup" aria-label="Type de parcours">
             <button type="button" role="radio" data-value="loop" aria-checked="true" class="is-active">🔄 Boucle</button>
+            <button type="button" role="radio" data-value="outback" aria-checked="false">↔️ Aller-retour</button>
             <button type="button" role="radio" data-value="oneway" aria-checked="false">➡️ Aller simple</button>
           </div>
         </section>
@@ -144,7 +152,11 @@
             <svg id="profile-svg" viewBox="0 0 300 90" preserveAspectRatio="none" aria-label="Profil altimétrique"></svg>
             <div class="profile__axis"><span id="profile-min">—</span><span id="profile-max">—</span></div>
           </div>
-          <button type="button" class="btn btn--accent" id="btn-gpx">⬇ Exporter en GPX</button>
+          <div class="actions">
+            <button type="button" class="btn btn--accent" id="btn-gpx">⬇ Exporter en GPX</button>
+            <button type="button" class="btn btn--icon" id="btn-share" title="Copier le lien de partage">🔗</button>
+          </div>
+          <p class="provider" id="provider"></p>
         </section>
       </div>
 

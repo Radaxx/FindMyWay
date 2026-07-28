@@ -7,6 +7,8 @@ import { buildGpx, downloadGpx, gpxFilename } from './gpx.js';
 import { searchAddress, reverseGeocode } from './geocoding.js';
 import { listPlaces, savePlace, deletePlace, getPlace, findPlaceNear } from './places.js';
 import { setupLayers } from './layers.js';
+import { signpostingApplies } from './routing.js';
+import { buildShareUrl, parseShareParams } from './share.js';
 
 const STORAGE_KEY = 'findmyway.settings.v1';
 const DEFAULT_SPEED = { bike: 25, run: 10 };
@@ -18,12 +20,15 @@ const state = {
   startLabel: null, // adresse ou nom du lieu correspondant au départ
   sport: 'bike',
   shape: 'loop',
+  terrain: 'mixed',
   goal: 'distance',
   bearing: null, // cap retenu pour le tracé courant
   vias: [], // points de passage imposés par l'utilisateur
   addingVia: false,
   signposted: true, // privilégier les itinéraires balisés
   variant: 0,
+  seed: null, // graine du tracé courant (partagée dans le lien)
+  forced: null, // cap et graine imposés par un lien partagé
   route: null,
   profile: null,
 };
@@ -42,17 +47,58 @@ let searchTimer = null;
 function init() {
   cacheDom();
   restoreSettings();
+  const shared = applyShared(parseShareParams(location.hash));
   initMap();
   bindEvents();
   refreshPlaces();
   refreshVias();
   updateSignposted();
   updateGoalHint();
+
+  // Un lien partagé contient tout pour retracer le parcours : on le fait.
+  if (shared) generate({ newVariant: false });
+}
+
+/**
+ * Applique l'état reçu par lien de partage, qui l'emporte sur les réglages
+ * mémorisés dans le navigateur.
+ * @returns {boolean} vrai si le lien décrit un parcours complet à retracer
+ */
+function applyShared(shared) {
+  if (!shared) return false;
+
+  if (shared.start) {
+    state.start = shared.start;
+    state.startLabel = null;
+  }
+  if (shared.vias) state.vias = shared.vias;
+  if (typeof shared.signposted === 'boolean') state.signposted = shared.signposted;
+
+  if (shared.distance) el.inputDistance.value = shared.distance;
+  if (shared.time) el.inputTime.value = shared.time;
+  if (shared.speed) el.inputSpeed.value = shared.speed;
+  if (shared.direction !== undefined) el.selectDirection.value = String(shared.direction);
+
+  applySegment(el.segSport, shared.sport, (v) => (state.sport = v));
+  applySegment(el.segTerrain, shared.terrain, (v) => (state.terrain = v));
+  applySegment(el.segShape, shared.shape, (v) => (state.shape = v));
+  applySegment(el.segGoal, shared.goal, (v) => {
+    state.goal = v;
+    el.groupDistance.classList.toggle('is-hidden', v !== 'distance');
+    el.groupTime.classList.toggle('is-hidden', v !== 'time');
+  });
+
+  if (Number.isFinite(shared.bearing) && Number.isFinite(shared.seed)) {
+    state.forced = { bearing: shared.bearing, seed: shared.seed };
+  }
+
+  return Boolean(shared.start);
 }
 
 function cacheDom() {
   const ids = [
     'map-wrap', 'btn-add-via', 'btn-clear-vias', 'via-list', 'via-count', 'via-hint',
+    'seg-terrain', 'terrain-hint', 'btn-share', 'provider',
     'input-signposted', 'signposted-row', 'signposted-hint',
     'input-address', 'address-results', 'btn-save-place', 'save-row', 'input-place-name',
     'btn-save-confirm', 'btn-save-cancel', 'places-row', 'select-place', 'btn-delete-place',
@@ -132,7 +178,7 @@ function updateStartDisplay() {
   syncPlaceSelection();
 }
 
-function drawRoute(coords, shape) {
+function drawRoute(coords, shape, turnaround) {
   if (routeLine) routeLine.remove();
   const latlngs = coords.map((p) => [p.lat, p.lng]);
 
@@ -147,11 +193,11 @@ function drawRoute(coords, shape) {
     endMarker.remove();
     endMarker = null;
   }
-  if (shape === 'oneway') {
-    const last = coords[coords.length - 1];
-    endMarker = L.marker([last.lat, last.lng], {
-      icon: pinIcon('A', 'marker-pin--end'),
-      title: "Point d'arrivée",
+  const endPoint = shape === 'outback' ? turnaround : coords[coords.length - 1];
+  if (endPoint && shape !== 'loop') {
+    endMarker = L.marker([endPoint.lat, endPoint.lng], {
+      icon: pinIcon(shape === 'outback' ? '½' : 'A', 'marker-pin--end'),
+      title: shape === 'outback' ? 'Demi-tour' : "Point d'arrivée",
     }).addTo(map);
   }
 
@@ -244,15 +290,32 @@ function refreshVias() {
     : "Facultatif : l'itinéraire passera par ces points.";
 }
 
-/** État de l'option « itinéraires balisés » (réglage propre au profil vélo). */
+const TERRAIN_HINT = {
+  bike: {
+    road: 'Goudron et voies roulantes (profil BRouter « fastbike »).',
+    mixed: 'Petites routes et bons chemins (profil « trekking »).',
+    trail: 'Chemins et pistes non revêtues (profil « gravel »).',
+  },
+  run: {
+    road: 'Bitume, trottoirs et voies piétonnes (OSRM piéton).',
+    mixed: 'Chemins de randonnée faciles (BRouter, SAC T1).',
+    trail: 'Sentiers, y compris un peu plus rustiques (SAC T2).',
+  },
+};
+
+/** Aides du terrain et disponibilité de l'option « itinéraires balisés ». */
 function updateSignposted() {
-  const available = state.sport === 'bike';
+  el.terrainHint.textContent = TERRAIN_HINT[state.sport][state.terrain];
+
+  const available = signpostingApplies(state.sport, state.terrain);
   el.inputSignposted.checked = state.signposted;
   el.inputSignposted.disabled = !available;
   el.signpostedRow.classList.toggle('is-disabled', !available);
   el.signpostedHint.textContent = available
-    ? 'Véloroutes, voies vertes et boucles cyclo signalisées (OSM).'
-    : 'Réglage disponible pour le vélo uniquement.';
+    ? state.sport === 'bike'
+      ? 'Véloroutes, voies vertes et boucles cyclo signalisées (OSM).'
+      : 'Sentiers de randonnée balisés (GR, sentiers de pays).'
+    : 'Sans effet sur le profil route.';
 }
 
 /* ------------------------------------------------------- adresses & lieux --- */
@@ -469,6 +532,12 @@ function bindEvents() {
     saveSettings();
   });
 
+  bindSegmented(el.segTerrain, (value) => {
+    state.terrain = value;
+    updateSignposted();
+    saveSettings();
+  });
+
   bindSegmented(el.segGoal, (value) => {
     state.goal = value;
     el.groupDistance.classList.toggle('is-hidden', value !== 'distance');
@@ -490,6 +559,7 @@ function bindEvents() {
   el.btnPlan.addEventListener('click', () => generate({ newVariant: false }));
   el.btnVariant.addEventListener('click', () => generate({ newVariant: true }));
   el.btnGpx.addEventListener('click', exportGpx);
+  el.btnShare.addEventListener('click', shareLink);
 
   el.panelToggle.addEventListener('click', () => {
     el.panel.classList.toggle('is-collapsed');
@@ -567,8 +637,15 @@ async function generate({ newVariant }) {
     state.variant = Math.floor(Math.random() * 1000);
   }
 
-  // Direction imposée, ou rotation par l'angle d'or pour varier les propositions.
-  if (chosen === 'auto') {
+  // Un lien partagé impose cap et graine, une seule fois : on doit retrouver
+  // exactement le tracé de l'expéditeur.
+  const forced = newVariant ? null : state.forced;
+  state.forced = null;
+
+  if (forced) {
+    state.bearing = forced.bearing;
+  } else if (chosen === 'auto') {
+    // Direction aléatoire, puis rotation par l'angle d'or pour varier.
     state.bearing =
       newVariant && state.bearing != null
         ? (state.bearing + 137.5) % 360
@@ -577,6 +654,8 @@ async function generate({ newVariant }) {
     const base = Number(chosen);
     state.bearing = newVariant ? base + ((state.variant % 5) - 2) * 12 : base;
   }
+
+  state.seed = forced?.seed ?? state.variant * 7919 + 13;
 
   const targetDistance = targetDistanceMeters();
 
@@ -588,14 +667,15 @@ async function generate({ newVariant }) {
       shape: state.shape,
       bearing: state.bearing,
       vias: state.vias,
-      preferSignposted: state.signposted && state.sport === 'bike',
-      seed: state.variant * 7919 + 13,
+      terrain: state.terrain,
+      preferSignposted: state.signposted && signpostingApplies(state.sport, state.terrain),
+      seed: state.seed,
       onProgress: (msg) => setStatus(msg),
       signal,
     });
 
     state.route = result;
-    drawRoute(result.coords, state.shape);
+    drawRoute(result.coords, state.shape, result.turnaround);
     const summary = showResult(result, targetDistance);
 
     setStatus('Récupération du profil altimétrique…');
@@ -621,6 +701,9 @@ function showResult(result, targetDistance) {
   el.profile.classList.add('is-hidden');
   el.result.classList.remove('is-hidden');
   el.btnVariant.disabled = false;
+
+  const tuned = result.tuned ? ' réglé' : '';
+  el.provider.textContent = `tracé par ${result.provider} · profil ${result.profile}${tuned}`;
 
   // Les points de passage imposent un plancher : le dire plutôt que parler d'écart.
   if (result.minimal) {
@@ -668,6 +751,35 @@ function renderElevation(profile) {
   el.profile.classList.remove('is-hidden');
 }
 
+/** Copie un lien reproduisant exactement le parcours affiché. */
+async function shareLink() {
+  const url = buildShareUrl(location.href, {
+    start: state.start,
+    vias: state.vias,
+    sport: state.sport,
+    shape: state.shape,
+    terrain: state.terrain,
+    goal: state.goal,
+    distance: el.inputDistance.value,
+    time: el.inputTime.value,
+    speed: el.inputSpeed.value,
+    direction: el.selectDirection.value,
+    signposted: state.signposted,
+    bearing: state.bearing,
+    seed: state.seed,
+  });
+
+  history.replaceState(null, '', url);
+
+  try {
+    await navigator.clipboard.writeText(url);
+    setStatus('Lien du parcours copié dans le presse-papiers.');
+  } catch {
+    // Presse-papiers refusé (contexte non sécurisé, permission) : on montre l'URL.
+    window.prompt('Copie ce lien pour partager le parcours :', url);
+  }
+}
+
 function exportGpx() {
   if (!state.route) return;
   const coords = state.route.coords;
@@ -713,6 +825,7 @@ function saveSettings() {
         startLabel: state.startLabel,
         vias: state.vias,
         signposted: state.signposted,
+        terrain: state.terrain,
         sport: state.sport,
         shape: state.shape,
         goal: state.goal,
@@ -751,6 +864,7 @@ function restoreSettings() {
 
   applySegment(el.segSport, saved.sport, (v) => (state.sport = v));
   applySegment(el.segShape, saved.shape, (v) => (state.shape = v));
+  applySegment(el.segTerrain, saved.terrain, (v) => (state.terrain = v));
   applySegment(el.segGoal, saved.goal, (v) => {
     state.goal = v;
     el.groupDistance.classList.toggle('is-hidden', v !== 'distance');

@@ -20,7 +20,7 @@ const MAX_ITERATIONS = 7;
  * @param {{lat:number,lng:number}} opts.start
  * @param {number} opts.targetDistance      distance visée en mètres
  * @param {'bike'|'run'} opts.sport
- * @param {'loop'|'oneway'} opts.shape
+ * @param {'loop'|'outback'|'oneway'} opts.shape
  * @param {number} opts.bearing             cap général en degrés
  * @param {number} opts.seed                graine pour varier les tracés
  * @param {{lat:number,lng:number}[]} [opts.vias]  points de passage imposés
@@ -29,8 +29,33 @@ const MAX_ITERATIONS = 7;
  * @param {AbortSignal} [opts.signal]
  */
 export async function planRoute(opts) {
+  // L'aller-retour se calcule sur la moitié de la cible, puis se replie.
+  if (opts.shape === 'outback') {
+    const leg = await planLeg({ ...opts, shape: 'oneway', targetDistance: opts.targetDistance / 2 });
+    return mirror(leg);
+  }
+  return planLeg(opts);
+}
+
+function planLeg(opts) {
   if (opts.vias?.length) return planWithVias(opts);
   return opts.shape === 'loop' ? planLoop(opts) : planOneWay(opts);
+}
+
+/**
+ * Replie un aller sur lui-même : on repart par le même chemin. C'est le seul
+ * cas où un aller-retour est voulu, donc le nettoyage des impasses ne doit
+ * surtout pas s'appliquer après coup (il n'intervient que sur l'aller).
+ */
+function mirror(leg) {
+  const back = leg.coords.slice(0, -1).reverse();
+  return {
+    ...leg,
+    coords: [...leg.coords, ...back],
+    distance: leg.distance * 2,
+    duration: leg.duration * 2,
+    turnaround: leg.coords.at(-1),
+  };
 }
 
 async function planLoop(opts) {
@@ -163,6 +188,7 @@ function bulgedWaypoints(chain, bulge, sense) {
 const routeThrough = (opts, waypoints) =>
   route([opts.start, ...waypoints], opts.sport, {
     signal: opts.signal,
+    terrain: opts.terrain,
     preferSignposted: opts.preferSignposted,
   });
 

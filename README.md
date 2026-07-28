@@ -32,10 +32,12 @@ GitHub Pages, Netlify, un dossier `public/` de n'importe quel hébergeur, etc.
 2. **Points de passage** (facultatif) : « 📌 Ajouter un point », puis un clic
    sur la carte par point à traverser. L'itinéraire les enchaîne dans l'ordre.
    Un marqueur se déplace au glisser, se retire d'un clic.
-3. **Activité** : vélo (routage cyclable) ou course à pied (routage piéton).
-   L'option **Privilégier les itinéraires balisés** colle aux véloroutes, voies
-   vertes et boucles cyclo signalisées.
-4. **Type de parcours** : boucle (retour au départ) ou aller simple.
+3. **Activité et terrain** : vélo ou course à pied, puis **route**, **mixte**
+   ou **chemins** — chaque combinaison choisit un profil de routage adapté
+   (voir plus bas). L'option **Privilégier les itinéraires balisés** colle aux
+   véloroutes, voies vertes et sentiers signalisés.
+4. **Type de parcours** : boucle, aller-retour (même chemin au retour) ou
+   aller simple.
 5. **Objectif** : une distance en km, ou une durée en minutes convertie en
    distance via la vitesse moyenne indiquée (25 km/h à vélo, 10 km/h en course
    par défaut).
@@ -43,7 +45,8 @@ GitHub Pages, Netlify, un dossier `public/` de n'importe quel hébergeur, etc.
 7. **Tracer l'itinéraire**, puis **Autre variante** autant de fois que voulu
    pour obtenir un autre parcours avec les mêmes contraintes.
 8. **Exporter en GPX** : fichier compatible Garmin, Wahoo, Komoot, Strava,
-   OpenRunner…
+   OpenRunner… Le bouton 🔗 copie un **lien de partage** qui rejoue exactement
+   le même parcours chez le destinataire.
 
 Le sélecteur en haut à droite de la carte ajoute des calques : itinéraires
 cyclables balisés, sentiers de randonnée, et traces GPS publiques d'OSM — de
@@ -65,6 +68,8 @@ d'ici ». La calibration se fait donc par itérations (`js/planner.js`) :
 - **Aller simple** : même principe avec un point d'arrivée placé à ~78 % de la
   distance cible à vol d'oiseau (le réseau routier rallonge toujours le tracé),
   plus un point intermédiaire décalé latéralement.
+- **Aller-retour** : un aller calibré sur la moitié de la cible, puis replié sur
+  lui-même. Aucune requête supplémentaire, et le retour suit exactement l'aller.
 - **Avec points de passage imposés** : le tracé qui les relie devient le
   plancher — impossible de faire plus court. S'il reste de la distance à
   couvrir, chaque portion est gonflée latéralement, alternativement d'un côté
@@ -87,12 +92,34 @@ d'itinéraires** (`route=bicycle` avec ses réseaux `icn`/`ncn`/`rcn`/`lcn`,
 `route=hiking`) décrivent les parcours **balisés sur le terrain**, donc ceux qui
 sont réellement empruntés.
 
-BRouter les pondère nativement. L'option « Privilégier les itinéraires balisés »
-récupère le profil `trekking`, y bascule le paramètre `stick_to_cycleroutes`,
-téléverse cette variante (`POST /brouter/profile`) et route avec l'identifiant
-renvoyé — BRouter n'acceptant pas de paramètre de profil dans l'URL. Tout est
-best-effort : au moindre accroc on retombe sur le profil standard, puis sur
-OSRM.
+BRouter les pondère nativement, et propose un profil par usage. Le terrain
+choisi sélectionne donc le profil, et l'option « itinéraires balisés » règle un
+de ses paramètres :
+
+| | Route | Mixte | Chemins |
+| --- | --- | --- | --- |
+| **Vélo** | `fastbike` | `trekking` + `stick_to_cycleroutes` | `gravel` + `prefer_unpaved_paths` |
+| **Course** | OSRM `routed-foot` | `hiking-mountain` (SAC T1) | `hiking-mountain` (SAC T2) + `hiking_routes_preference` |
+
+Sur le bitume en course à pied, l'instance piétonne d'OSRM reste plus adaptée
+que le seul profil de marche de BRouter, taillé pour la montagne : c'est donc
+elle qui passe en premier, l'autre servant de repli.
+
+BRouter n'acceptant aucun paramètre de profil dans l'URL, régler un profil
+suppose de récupérer son texte, d'y modifier les lignes `assign`, de le
+téléverser (`POST /brouter/profile`) et de router avec l'identifiant renvoyé.
+Tout est best-effort : au moindre accroc on retombe sur le profil standard,
+puis sur OSRM. Le fournisseur et le profil réellement utilisés sont affichés
+sous les statistiques — un tracé calculé par un repli ne passe pas inaperçu.
+
+### Lien de partage
+
+Le bouton 🔗 encode départ, points de passage, réglages, **cap et graine
+aléatoire** dans le fragment de l'URL. Le fragment n'étant jamais transmis au
+serveur, rien ne sort du navigateur ; et comme la génération est déterministe,
+le destinataire retrouve le tracé exact, pas seulement les mêmes réglages. À
+l'ouverture d'un tel lien, le parcours est retracé automatiquement. Le nom du
+lieu de départ n'est volontairement pas partagé.
 
 ### Pas d'impasses ni de demi-tours
 
@@ -115,8 +142,8 @@ impasse, il faut bien en sortir.
 | Itinéraires balisés | [Waymarked Trails](https://waymarkedtrails.org/) | calques vélo et randonnée, © Sarah Hoffmann (CC-BY-SA) |
 | Traces GPS | [traces publiques OSM](https://www.openstreetmap.org/traces) | calque `gps.tile.openstreetmap.org` |
 | Adresses | [Nominatim](https://nominatim.openstreetmap.org/) | recherche et géocodage inverse, saisie temporisée |
-| Routage | [BRouter](https://brouter.de/) (`trekking` / `hiking-beta`) | pondère les itinéraires cyclables balisés |
-| Routage de secours | [OSRM FOSSGIS](https://routing.openstreetmap.de/) (`routed-bike` / `routed-foot`) | si BRouter répond mal |
+| Routage | [BRouter](https://brouter.de/) (`fastbike`, `trekking`, `gravel`, `hiking-mountain`) | un profil par terrain, réglable |
+| Routage de secours | [OSRM FOSSGIS](https://routing.openstreetmap.de/) (`routed-bike` / `routed-foot`) | et fournisseur principal pour la course sur route |
 | Altitudes | [Open-Meteo Elevation](https://open-meteo.com/en/docs/elevation-api) | D+ et profil, best-effort |
 
 Ces serveurs sont mis à disposition gratuitement par la communauté : l'usage
@@ -131,7 +158,8 @@ css/styles.css        styles (thème clair/sombre, responsive)
 js/app.js             carte Leaflet, formulaire, orchestration
 js/planner.js         génération et calibration des parcours
 js/simplify.js        suppression des impasses parcourues aller-retour
-js/routing.js         appels BRouter (+ profil balisé) et repli OSRM
+js/routing.js         choix du profil selon terrain, BRouter puis repli OSRM
+js/share.js           lien de partage (encodage / lecture)
 js/layers.js          fonds de carte et calques d'itinéraires balisés
 js/geocoding.js       recherche d'adresse (Nominatim)
 js/places.js          lieux de départ enregistrés (localStorage)
@@ -163,4 +191,4 @@ avec un routeur simulé — donc sans réseau ni navigateur.
 - La popularité réelle (heatmap Strava, Komoot) n'est pas accessible : les
   itinéraires balisés OSM en sont un substitut, pas un équivalent.
 - L'aller simple ne prévoit pas le retour — pense au train, à la voiture, ou
-  choisis une boucle.
+  choisis une boucle ou un aller-retour.

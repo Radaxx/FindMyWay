@@ -1,65 +1,103 @@
 // Calcul d'itinéraires via des services publics et gratuits (aucune clé requise).
 //
-// Fournisseur principal : BRouter, dont les profils vélo pondèrent les
-// itinéraires cyclables balisés d'OpenStreetMap (relations route=bicycle,
-// réseaux icn/ncn/rcn/lcn) — c'est ce qui rapproche le tracé des parcours
-// réellement empruntés.
-// Repli : les instances OSRM de la FOSSGIS (profils vélo / piéton).
+// Fournisseur principal : BRouter, dont les profils décrivent finement le
+// terrain (goudron, mixte, chemins) et pondèrent les itinéraires balisés
+// d'OpenStreetMap. Repli : les instances OSRM de la FOSSGIS.
 //
-// Ces serveurs sont mis à disposition par la communauté OpenStreetMap : usage
-// raisonnable uniquement (l'application enchaîne au maximum quelques requêtes
-// par tracé).
+// BRouter n'accepte pas de paramètre de profil dans l'URL : pour régler un
+// profil, il faut récupérer son texte, y modifier les lignes `assign`, le
+// téléverser et réutiliser l'identifiant renvoyé. Tout est best-effort — au
+// moindre accroc on retombe sur le profil standard, puis sur OSRM.
 
 const BROUTER = 'https://brouter.de/brouter';
-const BROUTER_PROFILE = { bike: 'trekking', run: 'hiking-beta' };
 const OSRM_PROFILE = { bike: 'routed-bike', run: 'routed-foot' };
 
 class RoutingError extends Error {}
 
-/** Profil « itinéraires balisés » téléversé une fois par session. */
-let signpostedProfile = null;
+/** Profils personnalisés déjà téléversés, par clé profil+paramètres. */
+const uploaded = new Map();
+
+/**
+ * Fournisseurs à essayer, dans l'ordre, pour une activité et un terrain donnés.
+ *
+ * Côté vélo, BRouter a un profil par usage. Côté course à pied, seul
+ * `hiking-mountain` existe : réglé sur SAC T1 il convient à la course sur
+ * chemins, mais pour le bitume l'instance piétonne d'OSRM reste plus adaptée.
+ *
+ * @param {'bike'|'run'} sport
+ * @param {'road'|'mixed'|'trail'} terrain
+ * @param {boolean} signposted  privilégier les itinéraires balisés
+ */
+export function resolveProviders(sport, terrain = 'mixed', signposted = false) {
+  const osrm = { provider: 'osrm' };
+
+  if (sport === 'run') {
+    const hiking = {
+      provider: 'brouter',
+      profile: 'hiking-mountain',
+      params: {
+        // T1 = sentier de randonnée balisé ; T2 tolère un peu plus rustique.
+        SAC_scale_limit: terrain === 'trail' ? 2 : 1,
+        SAC_scale_preferred: 1,
+        ...(signposted ? { hiking_routes_preference: 1.0 } : {}),
+      },
+    };
+    return terrain === 'road' ? [osrm, hiking] : [hiking, osrm];
+  }
+
+  const bike = {
+    road: { profile: 'fastbike', params: {} },
+    mixed: {
+      profile: 'trekking',
+      params: signposted ? { stick_to_cycleroutes: true } : {},
+    },
+    trail: {
+      profile: 'gravel',
+      params: {
+        prefer_unpaved_paths: true,
+        ...(signposted ? { prefer_cycle_routes: true } : {}),
+      },
+    },
+  }[terrain] ?? { profile: 'trekking', params: {} };
+
+  return [{ provider: 'brouter', ...bike }, osrm];
+}
+
+/** L'option « itinéraires balisés » a-t-elle un effet sur ce profil ? */
+export function signpostingApplies(sport, terrain) {
+  return !(sport === 'bike' && terrain === 'road'); // fastbike n'expose aucun réglage
+}
 
 /**
  * Calcule un itinéraire passant par `points` ([{lat, lng}, ...]).
- * @param {{lat:number,lng:number}[]} points
- * @param {'bike'|'run'} sport
- * @param {{signal?: AbortSignal, preferSignposted?: boolean}} [options]
- * @returns {Promise<{coords: {lat,lng}[], distance: number, duration: number, provider: string}>}
+ * @returns {Promise<{coords: {lat,lng}[], distance: number, duration: number,
+ *                    provider: string, profile?: string, tuned?: boolean}>}
  */
-export async function route(points, sport, { signal, preferSignposted = false } = {}) {
+export async function route(points, sport, options = {}) {
   if (points.length < 2) throw new RoutingError('Il faut au moins deux points.');
 
-  const fallbackProfile = BROUTER_PROFILE[sport];
-  const profile = preferSignposted
-    ? await signpostedProfileId(sport, signal) ?? fallbackProfile
-    : fallbackProfile;
+  const { signal, terrain = 'mixed', preferSignposted = false } = options;
+  const steps = resolveProviders(sport, terrain, preferSignposted);
+  let firstError = null;
 
-  try {
-    return await routeBrouter(points, profile, signal);
-  } catch (err) {
-    if (err.name === 'AbortError') throw err;
-
-    // Le profil personnalisé peut avoir expiré côté serveur : on retente avec
-    // le profil standard avant de changer complètement de fournisseur.
-    if (profile !== fallbackProfile) {
-      signpostedProfile = null;
-      try {
-        return await routeBrouter(points, fallbackProfile, signal);
-      } catch (retryErr) {
-        if (retryErr.name === 'AbortError') throw retryErr;
-      }
-    }
-
+  for (const step of steps) {
     try {
-      return await routeOsrm(points, sport, signal);
-    } catch (fallbackErr) {
-      if (fallbackErr.name === 'AbortError') throw fallbackErr;
-      throw err instanceof RoutingError ? err : fallbackErr;
+      return step.provider === 'osrm'
+        ? await routeOsrm(points, sport, signal)
+        : await routeBrouter(points, step, signal);
+    } catch (err) {
+      if (err.name === 'AbortError') throw err;
+      firstError ??= err;
     }
   }
+
+  throw firstError ?? new RoutingError("Aucun itinéraire n'a pu être calculé.");
 }
 
-async function routeBrouter(points, profile, signal) {
+async function routeBrouter(points, step, signal) {
+  const tuned = await tunedProfileId(step, signal);
+  const profile = tuned ?? step.profile;
+
   const lonlats = points.map((p) => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`).join('|');
   const url =
     `${BROUTER}?lonlats=${lonlats}&profile=${encodeURIComponent(profile)}` +
@@ -80,6 +118,8 @@ async function routeBrouter(points, profile, signal) {
     distance: Number(props['track-length']) || 0,
     duration: Number(props['total-time']) || 0,
     provider: 'BRouter',
+    profile: step.profile,
+    tuned: Boolean(tuned),
   };
 }
 
@@ -103,41 +143,33 @@ async function routeOsrm(points, sport, signal) {
     distance: r.distance,
     duration: r.duration,
     provider: 'OSRM',
+    profile: OSRM_PROFILE[sport],
   };
 }
 
-/* -------------------------------------------- profil « itinéraires balisés » --- */
+/* ----------------------------------------------------- profils personnalisés --- */
 
-/**
- * Le profil `trekking` de BRouter n'a qu'une préférence modérée pour les
- * itinéraires cyclables. Son paramètre `stick_to_cycleroutes` la rend
- * franchement contraignante, mais BRouter ne sait pas recevoir de paramètre
- * dans l'URL : il faut lui téléverser une variante du profil et réutiliser
- * l'identifiant renvoyé.
- *
- * Tout est best-effort : au moindre accroc on renvoie null, et l'appelant
- * retombe sur le profil standard.
- *
- * @returns {Promise<string | null>}
- */
-async function signpostedProfileId(sport, signal) {
-  if (sport !== 'bike') return null; // seuls les profils vélo exposent ce réglage
-  if (!signpostedProfile) signpostedProfile = uploadSignpostedProfile(signal);
+/** Identifiant du profil réglé, ou null pour utiliser le profil standard. */
+async function tunedProfileId({ profile, params }, signal) {
+  if (!params || !Object.keys(params).length) return null;
+
+  const key = `${profile}|${JSON.stringify(params)}`;
+  if (!uploaded.has(key)) uploaded.set(key, uploadTunedProfile(profile, params, signal));
 
   try {
-    return await signpostedProfile;
+    return await uploaded.get(key);
   } catch {
-    signpostedProfile = Promise.resolve(null);
+    uploaded.set(key, Promise.resolve(null));
     return null;
   }
 }
 
-async function uploadSignpostedProfile(signal) {
+async function uploadTunedProfile(profile, params, signal) {
   try {
-    const res = await fetch(`${BROUTER}/profiles2/${BROUTER_PROFILE.bike}.brf`, { signal });
+    const res = await fetch(`${BROUTER}/profiles2/${profile}.brf`, { signal });
     if (!res.ok) return null;
 
-    const patched = stickToCycleRoutes(await res.text());
+    const patched = applyProfileParams(await res.text(), params);
     if (!patched) return null;
 
     const upload = await fetch(`${BROUTER}/profile`, {
@@ -157,14 +189,27 @@ async function uploadSignpostedProfile(signal) {
 }
 
 /**
- * Bascule `stick_to_cycleroutes` à true dans un profil BRouter.
- * @returns {string | null} le profil modifié, ou null si le paramètre est absent
+ * Remplace la valeur des paramètres `assign` d'un profil BRouter. Les lignes
+ * s'écrivent indifféremment `assign nom valeur` ou `assign nom = valeur`.
+ *
+ * @returns {string | null} le profil modifié, ou null si aucun paramètre
+ *          demandé n'existe dans ce profil (rien à téléverser)
  */
-export function stickToCycleRoutes(profileText) {
-  const pattern = /^(\s*assign\s+stick_to_cycleroutes\s+)(\S+)/m;
-  if (!pattern.test(profileText)) return null;
-  return profileText.replace(pattern, '$1true');
+export function applyProfileParams(profileText, params) {
+  let text = profileText;
+  let applied = 0;
+
+  for (const [name, value] of Object.entries(params)) {
+    const pattern = new RegExp(`^(\\s*assign\\s+${escapeName(name)}\\s*=?\\s*)(\\S+)`, 'm');
+    if (!pattern.test(text)) continue;
+    text = text.replace(pattern, `$1${value}`);
+    applied++;
+  }
+
+  return applied ? text : null;
 }
+
+const escapeName = (name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 function messageForOsrmCode(code) {
   switch (code) {

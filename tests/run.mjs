@@ -5,7 +5,8 @@
 import { destination, distance, pathLength } from '../js/geo.js';
 import { removeOutAndBack } from '../js/simplify.js';
 import { planRoute } from '../js/planner.js';
-import { stickToCycleRoutes } from '../js/routing.js';
+import { applyProfileParams, resolveProviders, signpostingApplies } from '../js/routing.js';
+import { buildShareUrl, parseShareParams } from '../js/share.js';
 
 let failures = 0;
 
@@ -221,25 +222,139 @@ fakeRouter();
     `${(res.distance / 1000).toFixed(2)} km`);
 }
 
-/* ------------------------------------------------- profil itinéraires balisés --- */
+/* --------------------------------------------------------- aller-retour --- */
 
-console.log('\nProfil BRouter (js/routing.js)');
+console.log('\nAller-retour (js/planner.js)');
+
+fakeRouter();
+{
+  for (const km of [10, 42]) {
+    const target = km * 1000;
+    const res = await planRoute({
+      start: home, targetDistance: target, sport: 'bike', shape: 'outback',
+      bearing: 30, seed: 5,
+    });
+
+    const errPct = ((res.distance - target) / target) * 100;
+    const closed = distance(res.coords[0], res.coords.at(-1)) < 5;
+    const symmetric = distance(res.coords[res.coords.length >> 1], res.turnaround) < 300;
+
+    check(`aller-retour ${km} km : revient au départ, à ±4 %`,
+      Math.abs(errPct) <= 4 && closed && symmetric && Boolean(res.turnaround),
+      `${(res.distance / 1000).toFixed(2)} km (${errPct >= 0 ? '+' : ''}${errPct.toFixed(1)} %)`);
+  }
+
+  // Le repli sur soi est voulu. Il atteint les deux extrémités du tracé, donc
+  // le nettoyage des impasses le laisse intact — vérifions-le explicitement.
+  const res = await planRoute({
+    start: home, targetDistance: 12000, sport: 'bike', shape: 'outback', bearing: 200, seed: 8,
+  });
+  const n = res.coords.length;
+  const mirrored = [1, 4, 10].every((k) => distance(res.coords[k], res.coords[n - 1 - k]) < 5);
+  check('le demi-tour volontaire est conservé',
+    removeOutAndBack(res.coords).removed === 0 && mirrored,
+    'le retour reprend exactement l’aller');
+
+  const target = destination(home, 90, 2500);
+  const withVia = await planRoute({
+    start: home, targetDistance: 16000, sport: 'bike', shape: 'outback', bearing: 90, seed: 9,
+    vias: [target],
+  });
+  check('aller-retour passant par un point imposé',
+    withVia.coords.some((p) => distance(p, target) < 300) &&
+    Math.abs((withVia.distance - 16000) / 16000) <= 0.05,
+    `${(withVia.distance / 1000).toFixed(2)} km`);
+}
+
+/* ----------------------------------------------------- terrain et profils --- */
+
+console.log('\nTerrain et profils BRouter (js/routing.js)');
+
+{
+  const profileOf = (sport, terrain, signposted = false) => {
+    const [first] = resolveProviders(sport, terrain, signposted);
+    return first.provider === 'osrm' ? 'osrm' : first.profile;
+  };
+
+  check('vélo : un profil par terrain',
+    profileOf('bike', 'road') === 'fastbike' &&
+    profileOf('bike', 'mixed') === 'trekking' &&
+    profileOf('bike', 'trail') === 'gravel');
+
+  check('course sur route : OSRM piéton en premier', profileOf('run', 'road') === 'osrm');
+  check('course sur chemins : BRouter hiking-mountain',
+    profileOf('run', 'trail') === 'hiking-mountain');
+
+  const trail = resolveProviders('run', 'trail', true)[0];
+  const easy = resolveProviders('run', 'mixed', false)[0];
+  check('difficulté SAC adaptée au terrain',
+    trail.params.SAC_scale_limit === 2 && easy.params.SAC_scale_limit === 1 &&
+    trail.params.hiking_routes_preference === 1 &&
+    easy.params.hiking_routes_preference === undefined);
+
+  check('un repli est toujours prévu',
+    resolveProviders('bike', 'trail').at(-1).provider === 'osrm' &&
+    resolveProviders('run', 'road').at(-1).provider === 'brouter');
+
+  check('option balisés annoncée sans effet sur fastbike',
+    signpostingApplies('bike', 'road') === false &&
+    signpostingApplies('bike', 'trail') === true &&
+    signpostingApplies('run', 'road') === true);
+}
 
 {
   const profile = [
     '# trekking profile',
     'assign   consider_elevation   true',
-    'assign   stick_to_cycleroutes   false  # %stick_to_cycleroutes% | Follow cycleroutes | boolean',
-    'assign   allow_ferries   true',
+    'assign   stick_to_cycleroutes   false  # %stick_to_cycleroutes% | boolean',
+    'assign   SAC_scale_limit          3    # %SAC_scale_limit%',
+    'assign   SAC_scale_preferred      1    # %SAC_scale_preferred%',
   ].join('\n');
 
-  const patched = stickToCycleRoutes(profile);
-  check('paramètre stick_to_cycleroutes activé',
+  const patched = applyProfileParams(profile, { stick_to_cycleroutes: true, SAC_scale_limit: 2 });
+  check('paramètres remplacés sans toucher au reste',
     /assign\s+stick_to_cycleroutes\s+true/.test(patched) &&
+    /assign\s+SAC_scale_limit\s+2/.test(patched) &&
+    /assign\s+SAC_scale_preferred\s+1/.test(patched) &&
     patched.includes('consider_elevation   true') &&
     patched.split('\n').length === profile.split('\n').length);
-  check('profil inconnu refusé (repli sur le profil standard)',
-    stickToCycleRoutes('assign consider_elevation true') === null);
+
+  check('aucun paramètre connu : rien à téléverser',
+    applyProfileParams('assign consider_elevation true', { prefer_unpaved_paths: true }) === null);
+
+  check('paramètres partiellement connus : on applique ce qui existe',
+    /assign\s+consider_elevation\s+false/.test(
+      applyProfileParams('assign consider_elevation true', { consider_elevation: false, absent: 1 })));
+}
+
+/* ------------------------------------------------------- lien de partage --- */
+
+console.log('\nLien de partage (js/share.js)');
+
+{
+  const shared = {
+    start: home, vias: [destination(home, 90, 1500)], sport: 'run', shape: 'outback',
+    terrain: 'trail', goal: 'time', distance: 30, time: 45, speed: 11,
+    direction: 'auto', signposted: true, bearing: 137.5, seed: 4242,
+  };
+  const url = buildShareUrl('https://exemple.app/index.html#ancien', shared);
+  const back = parseShareParams(url.split('#')[1]);
+
+  check('aller-retour du lien complet',
+    Math.abs(back.start.lat - home.lat) < 1e-5 && back.vias.length === 1 &&
+    back.sport === 'run' && back.shape === 'outback' && back.terrain === 'trail' &&
+    back.goal === 'time' && back.time === 45 && back.speed === 11 &&
+    back.direction === 'auto' && back.signposted === true &&
+    back.bearing === 137.5 && back.seed === 4242);
+
+  check('un seul fragment dans l’URL', url.split('#').length === 2);
+  check('lien vide ou farfelu ignoré',
+    parseShareParams('') === null && parseShareParams('#') === null &&
+    parseShareParams('#s=abc,def') === null);
+  check('valeurs hors bornes écartées',
+    parseShareParams('#s=91,0') === null &&
+    parseShareParams('#d=99999')?.distance === undefined &&
+    parseShareParams('#sp=vol')?.sport === undefined);
 }
 
 console.log(failures ? `\n${failures} test(s) en échec.` : '\nTous les tests passent.');
