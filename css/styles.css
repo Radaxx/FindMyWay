@@ -662,6 +662,21 @@ select:focus {
 
 .marker-pin--end { background: var(--accent); }
 
+/* Retouche du tracé */
+
+.route-grab { cursor: grab; }
+.route-grab:active { cursor: grabbing; }
+
+.route-handle {
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border: 3px solid var(--primary);
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .35);
+  cursor: pointer;
+}
+
 .marker-pin--via {
   width: 22px;
   height: 22px;

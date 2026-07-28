@@ -62,6 +62,9 @@ function mirror(leg) {
     distance: leg.distance * 2,
     duration: leg.duration * 2,
     turnaround: leg.coords.at(-1),
+    mirrored: true,
+    // La retouche porte sur l'aller : le retour n'en est que le reflet.
+    legCoords: leg.coords,
   };
 }
 
@@ -122,7 +125,10 @@ async function planWithFixedPoints(opts) {
   const chain = [start, ...mandatory];
 
   onProgress?.('Tracé imposé par les points de passage…');
-  const baseline = trimSpurs(await routeThrough(opts, mandatory));
+  const baseline = {
+    ...trimSpurs(await routeThrough(opts, mandatory)),
+    waypoints: [start, ...mandatory],
+  };
 
   if (!baseline.distance) throw new Error("Aucun itinéraire n'a pu être calculé.");
 
@@ -156,6 +162,27 @@ async function planWithFixedPoints(opts) {
       return Math.max(0.02, scale * (1 + (ratio - 1) * 0.8));
     },
   });
+}
+
+/**
+ * Recalcule un tracé à partir d'une chaîne de points retouchée à la main.
+ *
+ * Aucune calibration ici : l'utilisateur a déplacé la trace, c'est sa forme qui
+ * fait foi, pas la distance visée. La distance obtenue est simplement annoncée.
+ */
+export async function replanThrough(chain, opts) {
+  if (chain.length < 2) throw new Error('Il faut au moins un départ et une arrivée.');
+
+  const leg = {
+    ...trimSpurs(await route(chain, opts.sport, {
+      signal: opts.signal,
+      terrain: opts.terrain,
+      preferSignposted: opts.preferSignposted,
+    })),
+    waypoints: chain,
+  };
+
+  return opts.shape === 'outback' ? mirror(leg) : leg;
 }
 
 /** Points de passage répartis sur un cercle décalé dans la direction voulue. */
@@ -217,9 +244,10 @@ async function refine(opts, { build, initialScale, initialBest, adjust, maxItera
   for (let i = 0; i < limit; i++) {
     onProgress?.(`Calcul de l'itinéraire… (essai ${i + 1})`);
 
+    const waypoints = build(scale);
     let result;
     try {
-      result = await routeThrough(opts, build(scale));
+      result = await routeThrough(opts, waypoints);
     } catch (err) {
       if (err.name === 'AbortError') throw err;
       lastError = err;
@@ -232,7 +260,9 @@ async function refine(opts, { build, initialScale, initialBest, adjust, maxItera
     result = trimSpurs(result);
 
     const error = Math.abs(result.distance - targetDistance) / targetDistance;
-    if (!best || error < best.error) best = { ...result, error, scale };
+    if (!best || error < best.error) {
+      best = { ...result, error, scale, waypoints: [opts.start, ...waypoints] };
+    }
     if (error <= TOLERANCE) break;
 
     // Correction amortie pour éviter les oscillations d'un essai à l'autre.

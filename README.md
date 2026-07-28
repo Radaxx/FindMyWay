@@ -48,7 +48,11 @@ GitHub Pages, Netlify, un dossier `public/` de n'importe quel hébergeur, etc.
 6. **Direction générale** : imposée (N, NE, E…) ou aléatoire.
 7. **Tracer l'itinéraire**, puis **Autre variante** autant de fois que voulu
    pour obtenir un autre parcours avec les mêmes contraintes.
-8. **Exporter en GPX** : fichier compatible Garmin, Wahoo, Komoot, Strava,
+8. **Retoucher le tracé** : attrape la ligne et tire-la où tu veux — comme sur
+   Strava ou Komoot. Un point apparaît là où tu relâches, et l'itinéraire est
+   recalculé pour y passer. La poignée se déplace ensuite au glisser et se
+   retire d'un clic.
+9. **Exporter en GPX** : fichier compatible Garmin, Wahoo, Komoot, Strava,
    OpenRunner… Le bouton 🔗 copie un **lien de partage** qui rejoue exactement
    le même parcours chez le destinataire.
 
@@ -144,6 +148,36 @@ Le repli OSRM ne fournit pas cette information : dans ce cas le tracé reste
 uniformément orange et la légende disparaît, plutôt que d'afficher une
 répartition inventée.
 
+### Retoucher un tracé à la main
+
+Un itinéraire naît d'une **chaîne de points** envoyée au routeur : départ,
+points de passage, arrivée. Tirer la trace revient donc à insérer un point dans
+cette chaîne — reste à savoir où. `js/edit.js` retrouve la position de chaque
+point de la chaîne dans la trace, puis repère entre lesquels se situe l'endroit
+saisi : le nouveau point s'insère à ce rang, jamais avant le départ ni après
+l'arrivée.
+
+Le recalcul qui suit **ne recalibre pas la distance** : le tracé retouché est
+celui que tu as dessiné, la distance obtenue est simplement annoncée. Une seule
+requête au routeur par retouche.
+
+Sur un aller-retour, la retouche porte sur l'aller ; saisir le brin retour
+revient au même point de l'aller, et le tracé est replié à nouveau après
+recalcul.
+
+Quelques détails qui comptent :
+
+- une couche invisible et large recouvre la trace, car un trait de 5 px est
+  difficile à attraper à la souris comme au doigt ;
+- pendant le glissement, un aperçu en pointillés relie les deux voisins au
+  curseur — sans interroger le routeur à chaque pixel ;
+- le clic qui suit un relâchement est ignoré, sinon la carte le prendrait pour
+  une demande de déplacement du point de départ ;
+- un tracé retouché voyage entier dans le lien de partage (la graine seule
+  rejouerait le tracé d'origine, pas tes modifications) ;
+- « Tracer l'itinéraire » ou « Autre variante » repart d'un tracé neuf et
+  abandonne les retouches.
+
 ### Pas d'impasses ni de demi-tours
 
 Un point de passage se cale parfois sur une voie sans issue : le routeur y
@@ -181,6 +215,7 @@ css/styles.css        styles (thème clair/sombre, responsive)
 js/app.js             carte Leaflet, formulaire, orchestration
 js/planner.js         génération et calibration des parcours
 js/simplify.js        suppression des impasses parcourues aller-retour
+js/edit.js            retouche du tracé (position des points dans la trace)
 js/routing.js         choix du profil selon terrain, BRouter puis repli OSRM
 js/share.js           lien de partage (encodage / lecture)
 js/layers.js          fonds de carte et calques d'itinéraires balisés

@@ -1,7 +1,8 @@
 // Orchestration : carte, formulaire, génération du parcours et export GPX.
 
 import { cumulativeDistances, pathLength } from './geo.js';
-import { planRoute } from './planner.js';
+import { planRoute, replanThrough } from './planner.js';
+import { insertionIndex, nearestIndex } from './edit.js';
 import { fetchElevationProfile, interpolateElevations } from './elevation.js';
 import { buildGpx, downloadGpx, gpxFilename } from './gpx.js';
 import { searchAddress, reverseGeocode } from './geocoding.js';
@@ -12,7 +13,7 @@ import { buildShareUrl, parseShareParams } from './share.js';
 
 // Affichée en pied de panneau : permet de savoir d'un coup d'œil quelle
 // version le navigateur exécute réellement (cache, déploiement en retard…).
-const VERSION = '0.7 — point d’arrivée';
+const VERSION = '0.8 — tracé modifiable à la main';
 
 const STORAGE_KEY = 'findmyway.settings.v1';
 const DEFAULT_SPEED = { bike: 25, run: 10 };
@@ -35,14 +36,17 @@ const state = {
   variant: 0,
   seed: null, // graine du tracé courant (partagée dans le lien)
   forced: null, // cap et graine imposés par un lien partagé
+  forcedChain: null, // chaîne de points reçue d'un lien vers un tracé retouché
   route: null,
   profile: null,
+  edit: null, // { chain, manual } : chaîne de points du tracé affiché
 };
 
 const el = {};
 let map;
 let layers;
 let viaMarkers = [];
+let handleMarkers = [];
 let finishMarker;
 let startMarker;
 let endMarker;
@@ -82,6 +86,7 @@ function applyShared(shared) {
   }
   if (shared.vias) state.vias = shared.vias;
   if (shared.finish) state.finish = shared.finish;
+  if (shared.chain) state.forcedChain = shared.chain;
   if (typeof shared.signposted === 'boolean') state.signposted = shared.signposted;
 
   if (shared.distance) el.inputDistance.value = shared.distance;
@@ -102,7 +107,7 @@ function applyShared(shared) {
     state.forced = { bearing: shared.bearing, seed: shared.seed };
   }
 
-  return Boolean(shared.start);
+  return Boolean(shared.start) || Boolean(shared.chain);
 }
 
 function cacheDom() {
@@ -134,6 +139,10 @@ function initMap() {
   layers = setupLayers(map, state.sport);
 
   map.on('click', (e) => {
+    // Relâcher la trace après l'avoir tirée produit aussi un clic sur la carte :
+    // sans cette garde, la retouche déplacerait le point de départ.
+    if (Date.now() - lastPullAt < 500) return;
+
     const point = { lat: e.latlng.lat, lng: e.latlng.lng };
     if (state.pickingFinish) setFinish(point);
     else if (state.addingVia) addVia(point);
@@ -233,8 +242,183 @@ function drawRoute(coords, shape, turnaround, surfaces) {
     }).addTo(map);
   }
 
+  attachGrabLayer(latlngs);
+  refreshHandles();
+
   startMarker.setZIndexOffset(1000);
   map.fitBounds(base.getBounds(), { padding: [40, 40] });
+}
+
+/* ------------------------------------------------- retouche du tracé ------ */
+
+/**
+ * Couche invisible et large posée sur la trace : elle sert de zone de
+ * préhension, un trait de 5 px étant difficile à attraper à la souris comme au
+ * doigt.
+ */
+function attachGrabLayer(latlngs) {
+  if (!state.edit) return;
+
+  const grab = L.polyline(latlngs, {
+    color: '#000',
+    opacity: 0,
+    weight: 22,
+    lineCap: 'round',
+    bubblingMouseEvents: false,
+  }).addTo(routeLine);
+
+  const element = grab.getElement();
+  if (!element) return;
+
+  element.classList.add('route-grab');
+  element.addEventListener('pointerdown', startPull);
+}
+
+let pull = null; // retouche en cours
+let lastPullAt = 0; // date de la dernière retouche, pour ignorer le clic qui suit
+
+function startPull(event) {
+  if (!state.edit || event.button > 0) return;
+
+  const geometry = state.route.legCoords ?? state.route.coords;
+  const grabbed = map.mouseEventToLatLng(event);
+  let at = nearestIndex(geometry, { lat: grabbed.lat, lng: grabbed.lng });
+
+  // Sur un aller-retour, saisir le brin retour revient à retoucher l'aller.
+  if (state.route.mirrored) {
+    const grabbedOnTrack = nearestIndex(state.route.coords, { lat: grabbed.lat, lng: grabbed.lng });
+    const half = (state.route.coords.length - 1) / 2;
+    at = Math.min(
+      geometry.length - 1,
+      grabbedOnTrack > half ? state.route.coords.length - 1 - grabbedOnTrack : grabbedOnTrack
+    );
+  }
+
+  const rank = insertionIndex(geometry, state.edit.chain, at);
+  const preview = L.polyline([], {
+    color: getComputedStyle(document.body).getPropertyValue('--primary').trim() || '#1f6feb',
+    weight: 3,
+    dashArray: '6 6',
+    interactive: false,
+  }).addTo(map);
+
+  pull = { rank, preview, element: event.currentTarget, pointerId: event.pointerId, moved: false };
+
+  event.preventDefault();
+  event.currentTarget.setPointerCapture(event.pointerId);
+  map.dragging.disable();
+
+  event.currentTarget.addEventListener('pointermove', movePull);
+  event.currentTarget.addEventListener('pointerup', endPull);
+  event.currentTarget.addEventListener('pointercancel', cancelPull);
+}
+
+function movePull(event) {
+  if (!pull) return;
+
+  const at = map.mouseEventToLatLng(event);
+  const before = state.edit.chain[pull.rank - 1];
+  const after = state.edit.chain[pull.rank];
+
+  pull.point = { lat: at.lat, lng: at.lng };
+  pull.moved = true;
+  pull.preview.setLatLngs([[before.lat, before.lng], [at.lat, at.lng], [after.lat, after.lng]]);
+}
+
+async function endPull(event) {
+  const current = pull;
+  if (!current) return;
+  releasePull();
+
+  if (!current.moved || !current.point) return;
+
+  state.edit.chain.splice(current.rank, 0, current.point);
+  state.edit.manual.splice(current.rank, 0, true);
+  await replanEdited();
+}
+
+function cancelPull() {
+  releasePull();
+}
+
+function releasePull() {
+  if (!pull) return;
+  lastPullAt = Date.now();
+
+  pull.preview.remove();
+  pull.element.releasePointerCapture?.(pull.pointerId);
+  pull.element.removeEventListener('pointermove', movePull);
+  pull.element.removeEventListener('pointerup', endPull);
+  pull.element.removeEventListener('pointercancel', cancelPull);
+  map.dragging.enable();
+  pull = null;
+}
+
+/** Recalcule le tracé à partir de la chaîne retouchée, sans recalibrage. */
+async function replanEdited() {
+  controller?.abort();
+  controller = new AbortController();
+  const { signal } = controller;
+
+  setBusy(true);
+  setStatus('Recalcul du tracé…');
+
+  try {
+    const result = await replanThrough(state.edit.chain, {
+      sport: state.sport,
+      shape: state.shape,
+      terrain: state.terrain,
+      preferSignposted: state.signposted && signpostingApplies(state.sport, state.terrain),
+      signal,
+    });
+
+    state.route = result;
+    state.edit.chain = [...result.waypoints];
+    drawRoute(result.coords, state.shape, result.turnaround, result.surfaces);
+    showResult(result, targetDistanceMeters(), { edited: true });
+
+    state.profile = await fetchElevationProfile(result.coords, { signal });
+    renderElevation(state.profile);
+    setStatus(`Tracé modifié · ${(result.distance / 1000).toFixed(1)} km.`);
+  } catch (err) {
+    if (err.name === 'AbortError') return;
+    console.error(err);
+    setStatus(err.message || 'La modification du tracé a échoué.', true);
+  } finally {
+    if (!signal.aborted) setBusy(false);
+  }
+}
+
+/** Poignées des points ajoutés à la main : déplaçables, retirées d'un clic. */
+function refreshHandles() {
+  for (const marker of handleMarkers) marker.remove();
+  handleMarkers = [];
+  if (!state.edit) return;
+
+  state.edit.manual.forEach((isManual, index) => {
+    if (!isManual) return;
+
+    const point = state.edit.chain[index];
+    const marker = L.marker([point.lat, point.lng], {
+      icon: L.divIcon({ className: '', html: '<div class="route-handle"></div>', iconSize: [14, 14], iconAnchor: [7, 7] }),
+      draggable: true,
+      title: 'Point ajouté (glisser pour déplacer, cliquer pour retirer)',
+    }).addTo(map);
+
+    marker.on('dragend', async () => {
+      const p = marker.getLatLng();
+      state.edit.chain[index] = { lat: p.lat, lng: p.lng };
+      await replanEdited();
+    });
+    marker.on('click', async (e) => {
+      L.DomEvent.stop(e);
+      state.edit.chain.splice(index, 1);
+      state.edit.manual.splice(index, 1);
+      await replanEdited();
+    });
+
+    handleMarkers.push(marker);
+  });
 }
 
 /** Portions contiguës non revêtues, sous forme d'intervalles d'indices. */
@@ -801,25 +985,44 @@ async function generate({ newVariant }) {
 
   const targetDistance = targetDistanceMeters();
 
+  // Un lien vers un tracé retouché rejoue la chaîne telle quelle.
+  const linkedChain = state.forcedChain;
+  state.forcedChain = null;
+
   try {
-    const result = await planRoute({
-      start: state.start,
-      targetDistance,
+    const common = {
       sport: state.sport,
       shape: state.shape,
-      bearing: state.bearing,
-      vias: state.vias,
-      end: state.finish,
       terrain: state.terrain,
       preferSignposted: state.signposted && signpostingApplies(state.sport, state.terrain),
-      seed: state.seed,
-      onProgress: (msg) => setStatus(msg),
       signal,
-    });
+    };
+
+    const result = linkedChain
+      ? await replanThrough(linkedChain, common)
+      : await planRoute({
+          ...common,
+          start: state.start,
+          targetDistance,
+          bearing: state.bearing,
+          vias: state.vias,
+          end: state.finish,
+          seed: state.seed,
+          onProgress: (msg) => setStatus(msg),
+        });
 
     state.route = result;
+    // Les points intermédiaires d'un tracé partagé restent manipulables.
+    state.edit = result.waypoints
+      ? {
+          chain: [...result.waypoints],
+          manual: result.waypoints.map(
+            (_, i) => Boolean(linkedChain) && i > 0 && i < result.waypoints.length - 1
+          ),
+        }
+      : null;
     drawRoute(result.coords, state.shape, result.turnaround, result.surfaces);
-    const summary = showResult(result, targetDistance);
+    const summary = showResult(result, targetDistance, { edited: Boolean(linkedChain) });
 
     setStatus('Récupération du profil altimétrique…');
     state.profile = await fetchElevationProfile(result.coords, { signal });
@@ -834,7 +1037,7 @@ async function generate({ newVariant }) {
   }
 }
 
-function showResult(result, targetDistance) {
+function showResult(result, targetDistance, { edited = false } = {}) {
   const speed = Math.max(1, Number(el.inputSpeed.value) || DEFAULT_SPEED[state.sport]);
   const seconds = (result.distance / 1000 / speed) * 3600;
 
@@ -856,6 +1059,9 @@ function showResult(result, targetDistance) {
       `<span class="legend__road"></span>${100 - paths} % route ·` +
       `<span class="legend__path"></span>${paths} % chemins`;
   }
+
+  // Un tracé retouché à la main n'a plus à être comparé à l'objectif.
+  if (edited) return '';
 
   // Les points de passage imposent un plancher : le dire plutôt que parler d'écart.
   if (result.minimal) {
@@ -916,6 +1122,7 @@ async function shareLink() {
     start: state.start,
     vias: state.vias,
     finish: state.finish,
+    chain: state.edit?.manual.some(Boolean) ? state.edit.chain : null,
     sport: state.sport,
     shape: state.shape,
     terrain: state.terrain,

@@ -24,6 +24,8 @@ export function buildShareUrl(baseUrl, state) {
   if (state.start) params.set('s', coord(state.start));
   if (state.vias?.length) params.set('w', state.vias.map(coord).join(';'));
   if (state.finish) params.set('e', coord(state.finish));
+  // Tracé retouché à la main : c'est la chaîne de points qui fait foi.
+  if (state.chain?.length >= 2) params.set('c', state.chain.map(coord).join(';'));
 
   params.set('sp', state.sport);
   params.set('sh', state.shape);
@@ -67,6 +69,9 @@ export function parseShareParams(hash) {
 
   const finish = parsePoint(params.get('e'));
   if (finish) state.finish = finish;
+
+  const chain = (params.get('c') || '').split(';').map(parsePoint).filter(Boolean);
+  if (chain.length >= 2) state.chain = chain;
 
   pickEnum(state, 'sport', params.get('sp'), SPORTS);
   pickEnum(state, 'shape', params.get('sh'), SHAPES);

@@ -4,7 +4,8 @@
 
 import { destination, distance, pathLength } from '../js/geo.js';
 import { removeOutAndBack } from '../js/simplify.js';
-import { planRoute } from '../js/planner.js';
+import { planRoute, replanThrough } from '../js/planner.js';
+import { waypointMarks, insertionIndex, nearestIndex } from '../js/edit.js';
 import {
   applyProfileParams, resolveProviders, signpostingApplies,
   classifySurface, surfacesFromMessages,
@@ -390,6 +391,70 @@ fakeRouter();
     distance(loop.coords.at(-1), home) < 50);
 }
 
+/* -------------------------------------------------------- retouche du tracé --- */
+
+console.log('\nRetouche du tracé (js/edit.js, js/planner.js)');
+
+fakeRouter();
+{
+  for (const shape of ['loop', 'oneway', 'outback']) {
+    const res = await planRoute({
+      start: home, targetDistance: 20000, sport: 'bike', shape, bearing: 60, seed: 7,
+    });
+    const geometry = res.legCoords ?? res.coords;
+    const marks = waypointMarks(geometry, res.waypoints);
+
+    check(`${shape} : chaîne de points retrouvée sur la trace`,
+      Boolean(res.waypoints?.length) &&
+      marks.length === res.waypoints.length &&
+      marks.every((m, i) => i === 0 || m >= marks[i - 1]) &&
+      marks[0] === 0 && marks.at(-1) === geometry.length - 1,
+      `${res.waypoints.length} points, repères ${JSON.stringify(marks)}`);
+  }
+
+  // Tirer la trace insère un point entre les bons voisins, et le tracé y passe.
+  const res = await planRoute({
+    start: home, targetDistance: 20000, sport: 'bike', shape: 'loop', bearing: 60, seed: 7,
+  });
+  const at = Math.floor(res.coords.length / 2);
+  const rank = insertionIndex(res.coords, res.waypoints, at);
+  const pulled = destination(res.coords[at], 90, 700);
+  const chain = [...res.waypoints];
+  chain.splice(rank, 0, pulled);
+
+  const edited = await replanThrough(chain, { sport: 'bike', shape: 'loop' });
+  check('point inséré au bon rang, tracé recalculé',
+    rank > 0 && rank < res.waypoints.length &&
+    edited.coords.some((p) => distance(p, pulled) < 100) &&
+    distance(edited.coords[0], home) < 5 && distance(edited.coords.at(-1), home) < 5,
+    `rang ${rank}/${res.waypoints.length}, ${(edited.distance / 1000).toFixed(1)} km`);
+
+  // Un aller-retour se retouche par son aller, et reste symétrique.
+  const out = await planRoute({
+    start: home, targetDistance: 20000, sport: 'bike', shape: 'outback', bearing: 60, seed: 7,
+  });
+  const leg = out.legCoords;
+  const legRank = insertionIndex(leg, out.waypoints, Math.floor(leg.length / 2));
+  const detour = destination(leg[Math.floor(leg.length / 2)], 90, 600);
+  const legChain = [...out.waypoints];
+  legChain.splice(legRank, 0, detour);
+
+  const reMirrored = await replanThrough(legChain, { sport: 'bike', shape: 'outback' });
+  const n = reMirrored.coords.length;
+  check('aller-retour retouché reste replié',
+    reMirrored.mirrored === true &&
+    reMirrored.coords.some((p) => distance(p, detour) < 100) &&
+    [1, 8, 20].every((k) => distance(reMirrored.coords[k], reMirrored.coords[n - 1 - k]) < 1),
+    `${(reMirrored.distance / 1000).toFixed(1)} km`);
+
+  // Les extrémités ne sont jamais déplacées par une retouche.
+  const straight = [home, destination(home, 90, 1000), destination(home, 90, 2000)];
+  check('extrémités hors de portée de l’insertion',
+    insertionIndex(straight, [home, straight.at(-1)], 0) === 1 &&
+    insertionIndex(straight, [home, straight.at(-1)], 2) === 1 &&
+    nearestIndex(straight, destination(home, 90, 1010)) === 1);
+}
+
 /* ------------------------------------------------------------ revêtement --- */
 
 console.log('\nRevêtement (js/routing.js)');
@@ -466,6 +531,15 @@ console.log('\nLien de partage (js/share.js)');
   };
   const url = buildShareUrl('https://exemple.app/index.html#ancien', shared);
   const back = parseShareParams(url.split('#')[1]);
+
+  const withChain = buildShareUrl('https://exemple.app/', {
+    ...shared, chain: [home, destination(home, 90, 1000), destination(home, 180, 2000)],
+  });
+  const chainBack = parseShareParams(withChain.split('#')[1]);
+  check('tracé retouché transmis tel quel',
+    chainBack.chain?.length === 3 && Math.abs(chainBack.chain[2].lat - destination(home, 180, 2000).lat) < 1e-4);
+  check('chaîne d’un seul point ignorée',
+    parseShareParams('#c=44.9,-0.27')?.chain === undefined);
 
   check('aller-retour du lien complet',
     Math.abs(back.start.lat - home.lat) < 1e-5 && back.vias.length === 1 &&
